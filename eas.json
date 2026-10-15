@@ -9,6 +9,11 @@
       "distribution": "internal",
       "channel": "dev"
     },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development"
+    },
     "preview": {
       "distribution": "internal",
       "channel": "preview",
