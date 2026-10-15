@@ -1,0 +1,16 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Quy tắc cho bảng Hồ sơ sản phụ (patients)
+    match /patients/{patientId} {
+      allow read, write: if true;
+    }
+    
+    // Quy tắc cho bảng Đánh giá điểm đau eVAS (assessments)
+    match /assessments/{assessmentId} {
+      allow read, write: if true;
+    }
+    
+  }
+}
