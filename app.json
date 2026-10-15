@@ -29,6 +29,10 @@
         "projectId": "45625325-89ce-4871-9c5d-08d01cf3b45c"
       }
     },
-    "owner": "vdkhanh3112"
+    "owner": "vdkhanh3112",
+    "runtimeVersion": "1.0.0",
+    "updates": {
+      "url": "https://u.expo.dev/45625325-89ce-4871-9c5d-08d01cf3b45c"
+    }
   }
 }
