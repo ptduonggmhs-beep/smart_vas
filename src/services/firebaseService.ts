@@ -1,10 +1,12 @@
-import { doc, setDoc, getDoc, collection, getDocs, query, orderBy, where, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, getDocs, query, orderBy, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import { Assessment, Patient, SaveStatus } from '../types';
-import { StorageService } from './storageService';
+import { Assessment, Patient, ResearcherAccount, SaveStatus } from '../types';
+import { StorageService, INITIAL_SEED_RESEARCHERS } from './storageService';
 
 const PATIENTS_COLLECTION = 'patients';
 const ASSESSMENTS_COLLECTION = 'assessments';
+const RESEARCHERS_COLLECTION = 'researchers';
+
 
 export const FirebaseService = {
   /**
@@ -243,4 +245,141 @@ export const FirebaseService = {
 
     return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
   },
+
+  // ==========================================
+  // --- QUẢN LÝ TÀI KHOẢN & MÃ PIN NCV TRÊN CSDL ---
+  // ==========================================
+
+  /**
+   * Lấy danh sách tất cả tài khoản NCV & mã PIN từ Firestore (hoặc Local Cache fallback)
+   */
+  async getAllResearchers(): Promise<ResearcherAccount[]> {
+    const localResearchers = await StorageService.getLocalResearchers();
+
+    if (db) {
+      try {
+        const q = query(collection(db, RESEARCHERS_COLLECTION));
+        const querySnapshot = await getDocs(q);
+
+        if (!querySnapshot.empty) {
+          const remoteList: ResearcherAccount[] = [];
+          querySnapshot.forEach((docSnapshot) => {
+            const data = docSnapshot.data() as ResearcherAccount;
+            if (data && data.id) {
+              remoteList.push(data);
+            }
+          });
+
+          if (remoteList.length > 0) {
+            // Cập nhật lại local cache để đồng bộ
+            await StorageService.saveAllLocalResearchers(remoteList);
+            return remoteList;
+          }
+        } else {
+          // Firestore đang trống (lần đầu setup CSDL) -> Khởi tạo tài khoản ban đầu lên Firestore
+          for (const initUser of INITIAL_SEED_RESEARCHERS) {
+            try {
+              const ref = doc(db, RESEARCHERS_COLLECTION, initUser.id);
+              await setDoc(ref, {
+                ...initUser,
+                synced_at: serverTimestamp(),
+              });
+            } catch (seedErr) {
+              console.warn('Lỗi seed researcher lên Firestore:', seedErr);
+            }
+          }
+          return INITIAL_SEED_RESEARCHERS;
+        }
+      } catch (err: any) {
+        console.warn('Không thể đọc Researchers từ Firestore, chuyển sang bộ nhớ máy:', err?.message);
+      }
+    }
+
+    return localResearchers;
+  },
+
+  /**
+   * Lưu hoặc cập nhật tài khoản NCV & mã PIN vào CSDL (Firestore + Local)
+   */
+  async saveResearcher(researcher: ResearcherAccount): Promise<{ success: boolean; error?: string }> {
+    // 1. Luôn lưu vào Local Cache trước
+    await StorageService.saveLocalResearcher(researcher);
+
+    // 2. Thử lưu lên Firestore
+    if (db) {
+      try {
+        const ref = doc(db, RESEARCHERS_COLLECTION, researcher.id);
+        await setDoc(
+          ref,
+          {
+            id: researcher.id,
+            email: researcher.email.trim().toLowerCase(),
+            name: researcher.name.trim(),
+            role: researcher.role,
+            title: researcher.title || '',
+            pin: researcher.pin.trim(),
+            password: researcher.password || '',
+            is_active: researcher.is_active !== false,
+            created_at: researcher.created_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            synced_at: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        return { success: true };
+      } catch (err: any) {
+        console.warn('Lỗi lưu Researcher lên Firestore (đã lưu local):', err?.message);
+        return { success: false, error: err?.message || 'Lỗi mạng hoặc phân quyền Firestore' };
+      }
+    }
+
+    return { success: true };
+  },
+
+  /**
+   * Xóa tài khoản NCV khỏi CSDL (Firestore + Local)
+   */
+  async deleteResearcher(id: string): Promise<{ success: boolean; error?: string }> {
+    // 1. Xóa trong Local Cache
+    await StorageService.deleteLocalResearcher(id);
+
+    // 2. Xóa trên Firestore
+    if (db) {
+      try {
+        const ref = doc(db, RESEARCHERS_COLLECTION, id);
+        await deleteDoc(ref);
+        return { success: true };
+      } catch (err: any) {
+        console.warn('Lỗi xóa Researcher trên Firestore:', err?.message);
+        return { success: false, error: err?.message };
+      }
+    }
+
+    return { success: true };
+  },
+
+  /**
+   * Tìm tài khoản theo Mã PIN trong CSDL
+   */
+  async getResearcherByPin(pin: string): Promise<ResearcherAccount | null> {
+    const trimmed = pin.trim();
+    if (!trimmed) return null;
+
+    const all = await this.getAllResearchers();
+    const found = all.find((r) => r.pin.trim() === trimmed && r.is_active !== false);
+    return found || null;
+  },
+
+  /**
+   * Tìm tài khoản theo Email trong CSDL
+   */
+  async getResearcherByEmail(email: string): Promise<ResearcherAccount | null> {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) return null;
+
+    const all = await this.getAllResearchers();
+    const found = all.find((r) => r.email.trim().toLowerCase() === trimmed && r.is_active !== false);
+    return found || null;
+  },
 };
+

@@ -12,5 +12,10 @@ service cloud.firestore {
       allow read, write: if true;
     }
     
+    // Quy tắc cho bảng Quản lý Tài khoản & Mã PIN Nghiên cứu viên (researchers)
+    match /researchers/{researcherId} {
+      allow read, write: if true;
+    }
+    
   }
 }

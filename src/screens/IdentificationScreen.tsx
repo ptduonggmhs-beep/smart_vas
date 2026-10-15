@@ -285,7 +285,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
               </TouchableOpacity>
             ) : (
               <Text style={styles.inputHelpText}>
-                * Chị chỉ cần nhập mã một lần và bấm "Kiểm tra & Lưu mã". Ứng dụng sẽ ghi nhớ mã này cho các lần đánh giá tiếp theo.
+                * Chị chỉ cần nhập mã một lần và bấm {'"Kiểm tra & Lưu mã"'}. Ứng dụng sẽ ghi nhớ mã này cho các lần đánh giá tiếp theo.
               </Text>
             )}
           </View>

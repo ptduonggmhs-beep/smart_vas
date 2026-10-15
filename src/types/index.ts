@@ -50,3 +50,12 @@ export interface AppUser {
   role: UserRole;
   title?: string; // e.g. "Bác sĩ Nghiên cứu viên", "Chủ nhiệm đề tài"
 }
+
+export interface ResearcherAccount extends AppUser {
+  pin: string; // Mã PIN đăng nhập nhanh (4 - 6 số)
+  password?: string; // Mật khẩu đăng nhập bằng email (tùy chọn)
+  created_at: string;
+  updated_at?: string;
+  is_active?: boolean;
+}
+

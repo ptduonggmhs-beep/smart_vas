@@ -21,7 +21,6 @@ export const ConfirmationScreen: React.FC<ConfirmationScreenProps> = ({
   onOpenHistory,
 }) => {
   const isSuccess = assessment.save_status === 'success';
-  const isOffline = assessment.save_status === 'offline_cached';
 
   return (
     <ScrollView contentContainerStyle={styles.container} bounces={false}>

@@ -11,9 +11,10 @@ import {
   Alert,
   Share,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Assessment, Patient, AppUser } from '../types';
+import { Assessment, Patient, AppUser, ResearcherAccount, UserRole } from '../types';
 import { FirebaseService } from '../services/firebaseService';
 import { AuthService } from '../services/authService';
 
@@ -30,20 +31,22 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   currentUser,
   onUserChanged,
 }) => {
-  const [activeTab, setActiveTab] = useState<'assessments' | 'patients'>('assessments');
+  const [activeTab, setActiveTab] = useState<'assessments' | 'patients' | 'accounts'>('assessments');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
+  const [researchers, setResearchers] = useState<ResearcherAccount[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [filterStudyId, setFilterStudyId] = useState<string>('');
   const [filterPatientId, setFilterPatientId] = useState<string>('');
+  const [filterResearcherText, setFilterResearcherText] = useState<string>('');
   const [patientViewMode, setPatientViewMode] = useState<'list' | 'form'>('list');
   const [syncing, setSyncing] = useState<boolean>(false);
 
   // Authentication State
   const [loginMethod, setLoginMethod] = useState<'pin' | 'email'>('pin');
   const [pinInput, setPinInput] = useState<string>('');
-  const [emailInput, setEmailInput] = useState<string>('ncv@smartvas.vn');
-  const [passwordInput, setPasswordInput] = useState<string>('ncv123456');
+  const [emailInput, setEmailInput] = useState<string>('');
+  const [passwordInput, setPasswordInput] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
   const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
 
@@ -55,18 +58,48 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   const [newDrugs, setNewDrugs] = useState<string>('');
   const [newPaperVas, setNewPaperVas] = useState<string>('');
 
+  // Quản lý Tài khoản & Mã PIN trên CSDL
+  const [isAccountModalOpen, setIsAccountModalOpen] = useState<boolean>(false);
+  const [editingAccount, setEditingAccount] = useState<ResearcherAccount | null>(null);
+  const [accName, setAccName] = useState<string>('');
+  const [accEmail, setAccEmail] = useState<string>('');
+  const [accPin, setAccPin] = useState<string>('');
+  const [accPassword, setAccPassword] = useState<string>('');
+  const [accRole, setAccRole] = useState<UserRole>('ncv');
+  const [accTitle, setAccTitle] = useState<string>('');
+  const [accIsActive, setAccIsActive] = useState<boolean>(true);
+
+  // Modal đổi mã PIN nhanh
+  const [isPinModalOpen, setIsPinModalOpen] = useState<boolean>(false);
+  const [pinChangeTarget, setPinChangeTarget] = useState<ResearcherAccount | null>(null);
+  const [newPinValue, setNewPinValue] = useState<string>('');
+  const [visiblePins, setVisiblePins] = useState<{ [id: string]: boolean }>({});
+
   const isAuthorized = AuthService.isNCVorHigher(currentUser);
+  const isAdmin = AuthService.isAdmin(currentUser);
 
   const loadData = async () => {
     if (!isAuthorized) return;
     setLoading(true);
     try {
-      const [allAssessments, allPatients] = await Promise.all([
-        FirebaseService.getAllAssessments(),
-        FirebaseService.getAllPatients(),
-      ]);
-      setAssessments(allAssessments);
-      setPatients(allPatients);
+      if (isAdmin) {
+        const [allAssessments, allPatients, allResearchers] = await Promise.all([
+          FirebaseService.getAllAssessments(),
+          FirebaseService.getAllPatients(),
+          AuthService.getAllResearchers(),
+        ]);
+        setAssessments(allAssessments);
+        setPatients(allPatients);
+        setResearchers(allResearchers);
+      } else {
+        const [allAssessments, allPatients] = await Promise.all([
+          FirebaseService.getAllAssessments(),
+          FirebaseService.getAllPatients(),
+        ]);
+        setAssessments(allAssessments);
+        setPatients(allPatients);
+        setResearchers([]);
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -78,8 +111,12 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     if (visible && isAuthorized) {
       loadData();
     }
+    if (!isAdmin && activeTab === 'accounts') {
+      setActiveTab('assessments');
+    }
     setAuthError('');
-  }, [visible, isAuthorized]);
+  }, [visible, isAuthorized, isAdmin]);
+
 
   const handleLogin = async () => {
     setAuthError('');
@@ -221,6 +258,209 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     }
   };
 
+  // --- Quản lý Tài khoản & Mã PIN (Chỉ dành cho Admin) ---
+  const handleOpenAddAccount = () => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền thêm tài khoản.');
+      return;
+    }
+    setEditingAccount(null);
+    setAccName('');
+    setAccEmail('');
+    setAccPin('');
+    setAccPassword('');
+    setAccRole('ncv');
+    setAccTitle('Nghiên cứu viên (NCV)');
+    setAccIsActive(true);
+    setIsAccountModalOpen(true);
+  };
+
+  const handleOpenEditAccount = (acc: ResearcherAccount) => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa tài khoản.');
+      return;
+    }
+    setEditingAccount(acc);
+    setAccName(acc.name);
+    setAccEmail(acc.email);
+    setAccPin(acc.pin);
+    setAccPassword(acc.password || '');
+    setAccRole(acc.role);
+    setAccTitle(acc.title || '');
+    setAccIsActive(acc.is_active !== false);
+    setIsAccountModalOpen(true);
+  };
+
+  const handleSaveAccount = async () => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền lưu tài khoản.');
+      return;
+    }
+    if (!accName.trim()) {
+      Alert.alert('Thiếu thông tin', 'Vui lòng nhập Họ và tên NCV / Bác sĩ.');
+      return;
+    }
+    const trimmedEmail = accEmail.trim().toLowerCase();
+    if (!trimmedEmail || !trimmedEmail.includes('@')) {
+      Alert.alert('Email không hợp lệ', 'Vui lòng nhập đúng định dạng email (vd: ncv@benhvien.vn).');
+      return;
+    }
+    const trimmedPin = accPin.trim();
+    if (!trimmedPin || trimmedPin.length < 4 || trimmedPin.length > 6 || !/^\d+$/.test(trimmedPin)) {
+      Alert.alert('Mã PIN không hợp lệ', 'Mã PIN đăng nhập nhanh phải gồm từ 4 đến 6 chữ số (0-9).');
+      return;
+    }
+
+    const accountData: ResearcherAccount = {
+      id: editingAccount ? editingAccount.id : `ncv-${Date.now()}`,
+      name: accName.trim(),
+      email: trimmedEmail,
+      pin: trimmedPin,
+      password: accPassword.trim() || (editingAccount?.password ?? '123456'),
+      role: accRole,
+      title: accTitle.trim() || (accRole === 'admin' ? 'Quản trị viên Đề tài' : 'Nghiên cứu viên'),
+      is_active: accIsActive,
+      created_at: editingAccount ? editingAccount.created_at : new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    setLoading(true);
+    const res = await AuthService.saveResearcher(accountData);
+    setLoading(false);
+
+    if (res.success) {
+      Alert.alert(
+        'Thành công',
+        editingAccount
+          ? `Đã cập nhật thông tin tài khoản ${accountData.name} trên CSDL.`
+          : `Đã thêm tài khoản ${accountData.name} vào CSDL thành công.`
+      );
+      setIsAccountModalOpen(false);
+      loadData();
+    } else {
+      Alert.alert('Không thể lưu', res.error || 'Lỗi khi lưu tài khoản vào CSDL');
+    }
+  };
+
+  const handleDeleteAccount = (acc: ResearcherAccount) => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền xóa tài khoản.');
+      return;
+    }
+    if (currentUser && currentUser.id === acc.id) {
+      Alert.alert('Không thể xóa', 'Bạn không thể tự xóa tài khoản của chính mình khi đang đăng nhập.');
+      return;
+    }
+    if (acc.role === 'admin') {
+      const activeAdmins = researchers.filter((r) => r.role === 'admin' && r.is_active !== false);
+      if (activeAdmins.length <= 1) {
+        Alert.alert('Không thể xóa', 'Hệ thống cần duy trì ít nhất một tài khoản Quản trị viên (Admin) đang hoạt động.');
+        return;
+      }
+    }
+
+    Alert.alert(
+      'Xác nhận xóa tài khoản',
+      `Bạn có chắc chắn muốn xóa tài khoản "${acc.name}" (${acc.email}) khỏi CSDL? Thao tác này không thể hoàn tác.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa vĩnh viễn',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await AuthService.deleteResearcher(acc.id);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã xóa', 'Tài khoản đã được xóa khỏi CSDL.');
+              loadData();
+            } else {
+              Alert.alert('Lỗi', res.error || 'Không thể xóa tài khoản');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleToggleAccountStatus = async (acc: ResearcherAccount) => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền khóa/mở tài khoản.');
+      return;
+    }
+    if (currentUser && currentUser.id === acc.id && acc.is_active !== false) {
+      Alert.alert('Không thể khóa', 'Bạn không thể tự tạm khóa tài khoản của chính mình.');
+      return;
+    }
+    const nextStatus = acc.is_active === false ? true : false;
+    setLoading(true);
+    const res = await AuthService.saveResearcher({
+      ...acc,
+      is_active: nextStatus,
+      updated_at: new Date().toISOString(),
+    });
+    setLoading(false);
+
+    if (res.success) {
+      Alert.alert('Thành công', `Đã ${nextStatus ? 'kích hoạt lại' : 'tạm khóa'} tài khoản ${acc.name}.`);
+      loadData();
+    } else {
+      Alert.alert('Lỗi', res.error || 'Không thể thay đổi trạng thái');
+    }
+  };
+
+  const handleOpenChangePin = (acc: ResearcherAccount) => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền đổi mã PIN.');
+      return;
+    }
+    setPinChangeTarget(acc);
+    setNewPinValue('');
+    setIsPinModalOpen(true);
+  };
+
+  const handleSaveNewPin = async () => {
+    if (!isAdmin) {
+      Alert.alert('Không có quyền', 'Chỉ Quản trị viên (Admin) mới có quyền cập nhật mã PIN.');
+      return;
+    }
+    if (!pinChangeTarget) return;
+    const trimmed = newPinValue.trim();
+    if (!trimmed || trimmed.length < 4 || trimmed.length > 6 || !/^\d+$/.test(trimmed)) {
+      Alert.alert('Mã PIN không hợp lệ', 'Mã PIN mới phải gồm 4 đến 6 chữ số (0-9).');
+      return;
+    }
+
+    setLoading(true);
+    const res = await AuthService.updatePin(pinChangeTarget.id, trimmed);
+    setLoading(false);
+
+    if (res.success) {
+      Alert.alert('Đổi mã PIN thành công', `Mã PIN mới cho ${pinChangeTarget.name} là: ${trimmed}`);
+      setIsPinModalOpen(false);
+      setPinChangeTarget(null);
+      setNewPinValue('');
+      loadData();
+    } else {
+      Alert.alert('Lỗi đổi mã PIN', res.error || 'Không thể cập nhật mã PIN');
+    }
+  };
+
+  const togglePinVisibility = (id: string) => {
+    setVisiblePins((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const filteredResearchers = researchers.filter((r) => {
+    const q = filterResearcherText.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      r.name.toLowerCase().includes(q) ||
+      r.email.toLowerCase().includes(q) ||
+      (r.title && r.title.toLowerCase().includes(q)) ||
+      r.pin.includes(q)
+    );
+  });
+
   const filteredAssessments = filterStudyId.trim()
     ? assessments.filter((a) => a.study_id.toUpperCase().includes(filterStudyId.trim().toUpperCase()))
     : assessments;
@@ -347,7 +587,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
             {/* Method 1: Quick PIN Login */}
             {loginMethod === 'pin' ? (
               <View style={styles.formCard}>
-                <Text style={styles.inputLabel}>Nhập mã PIN của bạn:</Text>
+                <Text style={styles.inputLabel}>Nhập mã PIN NCV của bạn:</Text>
                 <TextInput
                   style={styles.pinInput}
                   value={pinInput}
@@ -357,27 +597,14 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   secureTextEntry
                   maxLength={6}
                   textAlign="center"
+                  placeholderTextColor="#94A3B8"
                 />
 
-                <Text style={styles.quickPresetTitle}>Chọn nhanh mã PIN demo nghiên cứu:</Text>
-                <View style={styles.quickPresetRow}>
-                  <TouchableOpacity
-                    style={styles.quickPresetChip}
-                    onPress={() => setPinInput('8888')}
-                  >
-                    <Ionicons name="person" size={14} color="#0284C7" />
-                    <Text style={styles.quickPresetText}>NCV Lâm sàng (PIN: 8888)</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.quickPresetChip, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}
-                    onPress={() => setPinInput('9999')}
-                  >
-                    <Ionicons name="shield" size={14} color="#D97706" />
-                    <Text style={[styles.quickPresetText, { color: '#B45309' }]}>
-                      Chủ nhiệm / Admin (PIN: 9999)
-                    </Text>
-                  </TouchableOpacity>
+                <View style={styles.authInfoNoteBox}>
+                  <Ionicons name="shield-checkmark" size={16} color="#0284C7" />
+                  <Text style={styles.authInfoNoteText}>
+                    Mã PIN cá nhân (4 - 6 số) được định danh & quản lý trực tiếp trong Cơ sở dữ liệu của đề tài.
+                  </Text>
                 </View>
               </View>
             ) : (
@@ -388,9 +615,10 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   style={styles.emailInput}
                   value={emailInput}
                   onChangeText={setEmailInput}
-                  placeholder="ncv@smartvas.vn"
+                  placeholder="ncv@benhvien.vn"
                   autoCapitalize="none"
                   keyboardType="email-address"
+                  placeholderTextColor="#94A3B8"
                 />
 
                 <Text style={[styles.inputLabel, { marginTop: 12 }]}>Mật khẩu:</Text>
@@ -398,30 +626,16 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   style={styles.emailInput}
                   value={passwordInput}
                   onChangeText={setPasswordInput}
-                  placeholder="Mật khẩu"
+                  placeholder="Nhập mật khẩu"
+                  placeholderTextColor="#94A3B8"
                   secureTextEntry
                 />
 
-                <Text style={styles.quickPresetTitle}>Tài khoản mẫu:</Text>
-                <View style={styles.quickPresetRow}>
-                  <TouchableOpacity
-                    style={styles.quickPresetChip}
-                    onPress={() => {
-                      setEmailInput('ncv@smartvas.vn');
-                      setPasswordInput('ncv123456');
-                    }}
-                  >
-                    <Text style={styles.quickPresetText}>ncv@smartvas.vn</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.quickPresetChip}
-                    onPress={() => {
-                      setEmailInput('admin@smartvas.vn');
-                      setPasswordInput('admin123456');
-                    }}
-                  >
-                    <Text style={styles.quickPresetText}>admin@smartvas.vn</Text>
-                  </TouchableOpacity>
+                <View style={styles.authInfoNoteBox}>
+                  <Ionicons name="information-circle-outline" size={16} color="#0284C7" />
+                  <Text style={styles.authInfoNoteText}>
+                    Đăng nhập bằng tài khoản Nghiên cứu viên đã được phân quyền trong CSDL.
+                  </Text>
                 </View>
               </View>
             )}
@@ -478,9 +692,25 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   color={activeTab === 'patients' ? '#0284C7' : '#64748B'}
                 />
                 <Text style={[styles.tabText, activeTab === 'patients' && styles.tabTextActive]}>
-                  Hồ sơ Bệnh án ({patients.length})
+                  Hồ sơ ({patients.length})
                 </Text>
               </TouchableOpacity>
+
+              {isAdmin && (
+                <TouchableOpacity
+                  style={[styles.tabItem, activeTab === 'accounts' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('accounts')}
+                >
+                  <Ionicons
+                    name="key-outline"
+                    size={18}
+                    color={activeTab === 'accounts' ? '#0284C7' : '#64748B'}
+                  />
+                  <Text style={[styles.tabText, activeTab === 'accounts' && styles.tabTextActive]}>
+                    Tài khoản & PIN ({researchers.length})
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             {/* Tab 1: Assessments */}
@@ -859,6 +1089,525 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                 )}
               </View>
             )}
+
+            {/* Tab 3: Quản lý Tài khoản & Mã PIN Nghiên cứu viên trên CSDL (Chỉ dành cho Admin) */}
+            {activeTab === 'accounts' && isAdmin && (
+              <View style={styles.tabContent}>
+                <View style={styles.actionRow}>
+                  <View style={styles.searchBox}>
+                    <Ionicons name="search" size={18} color="#94A3B8" />
+                    <TextInput
+                      style={styles.searchInput}
+                      placeholder="Tìm theo Tên, Email, Mã PIN..."
+                      value={filterResearcherText}
+                      onChangeText={setFilterResearcherText}
+                      placeholderTextColor="#94A3B8"
+                    />
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.actionBtnSecondary}
+                    onPress={loadData}
+                    disabled={loading}
+                  >
+                    <Ionicons name="sync" size={16} color="#0284C7" />
+                    <Text style={styles.actionBtnText}>Làm mới</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.actionBtnPrimary}
+                    onPress={handleOpenAddAccount}
+                  >
+                    <Ionicons name="person-add" size={16} color="#FFFFFF" />
+                    <Text style={styles.actionBtnPrimaryText}>Thêm NCV</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Banner Thông tin CSDL */}
+                <View style={styles.dbInfoBanner}>
+                  <View style={styles.dbInfoIconCircle}>
+                    <Ionicons name="server" size={20} color="#0284C7" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dbInfoTitle}>Cơ sở dữ liệu Tài khoản & Mã PIN NCV</Text>
+                    <Text style={styles.dbInfoDesc}>
+                      Dữ liệu tài khoản và mã PIN được đồng bộ trực tiếp với CSDL (Firestore & Bộ nhớ thiết bị). Nghiên cứu viên dùng mã PIN riêng để đăng nhập tại giường bệnh.
+                    </Text>
+                  </View>
+                </View>
+
+                {loading ? (
+                  <View style={styles.loadingBox}>
+                    <ActivityIndicator size="large" color="#0284C7" />
+                    <Text style={styles.loadingText}>Đang tải danh sách tài khoản từ CSDL...</Text>
+                  </View>
+                ) : filteredResearchers.length === 0 ? (
+                  <View style={styles.emptyBox}>
+                    <Ionicons name="people-outline" size={48} color="#CBD5E1" />
+                    <Text style={styles.emptyTitle}>Không tìm thấy tài khoản nào</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Bấm {'"Thêm NCV"'} để tạo tài khoản nghiên cứu viên mới vào CSDL.
+                    </Text>
+                  </View>
+                ) : (
+                  <ScrollView style={styles.listScroll} showsVerticalScrollIndicator={false}>
+                    {filteredResearchers.map((item) => {
+                      const isPinVisible = !!visiblePins[item.id];
+                      const isAdminRole = item.role === 'admin';
+                      const isActive = item.is_active !== false;
+
+                      return (
+                        <View key={item.id} style={styles.accountCard}>
+                          {/* Card Header */}
+                          <View style={styles.accountHeader}>
+                            <View
+                              style={[
+                                styles.accountAvatar,
+                                isAdminRole ? styles.accountAvatarAdmin : styles.accountAvatarNCV,
+                              ]}
+                            >
+                              <Ionicons
+                                name={isAdminRole ? 'shield' : 'person'}
+                                size={20}
+                                color={isAdminRole ? '#D97706' : '#0284C7'}
+                              />
+                            </View>
+
+                            <View style={{ flex: 1, marginLeft: 10 }}>
+                              <View style={styles.accountNameRow}>
+                                <Text style={styles.accountNameText}>{item.name}</Text>
+                              </View>
+                              <Text style={styles.accountTitleText}>
+                                {item.title || (isAdminRole ? 'Quản trị viên Đề tài' : 'Nghiên cứu viên')}
+                              </Text>
+                            </View>
+
+                            <View style={styles.accountBadgesCol}>
+                              <View
+                                style={[
+                                  styles.roleTag,
+                                  isAdminRole ? styles.roleTagAdmin : styles.roleTagNCV,
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.roleTagText,
+                                    isAdminRole ? styles.roleTagTextAdmin : styles.roleTagTextNCV,
+                                  ]}
+                                >
+                                  {isAdminRole ? 'ADMIN' : 'NCV'}
+                                </Text>
+                              </View>
+
+                              <View
+                                style={[
+                                  styles.statusTag,
+                                  isActive ? styles.statusTagActive : styles.statusTagInactive,
+                                ]}
+                              >
+                                <View
+                                  style={[
+                                    styles.statusDotSmall,
+                                    { backgroundColor: isActive ? '#10B981' : '#94A3B8' },
+                                  ]}
+                                />
+                                <Text
+                                  style={[
+                                    styles.statusTagText,
+                                    { color: isActive ? '#059669' : '#64748B' },
+                                  ]}
+                                >
+                                  {isActive ? 'Hoạt động' : 'Tạm khóa'}
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
+
+                          {/* Email Row */}
+                          <View style={styles.accountEmailRow}>
+                            <Ionicons name="mail-outline" size={15} color="#64748B" />
+                            <Text style={styles.accountEmailText}>{item.email}</Text>
+                          </View>
+
+                          {/* PIN Box */}
+                          <View style={styles.accountPinBox}>
+                            <View style={styles.accountPinLeft}>
+                              <Ionicons name="keypad" size={16} color="#0284C7" />
+                              <Text style={styles.accountPinLabel}>Mã PIN nhanh:</Text>
+                              <Text style={styles.accountPinValue}>
+                                {isPinVisible ? item.pin : '••••'}
+                              </Text>
+                              <TouchableOpacity
+                                onPress={() => togglePinVisibility(item.id)}
+                                style={styles.pinEyeBtn}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Ionicons
+                                  name={isPinVisible ? 'eye-off-outline' : 'eye-outline'}
+                                  size={16}
+                                  color="#0284C7"
+                                />
+                              </TouchableOpacity>
+                            </View>
+
+                            <TouchableOpacity
+                              style={styles.changePinQuickBtn}
+                              onPress={() => handleOpenChangePin(item)}
+                            >
+                              <Ionicons name="create-outline" size={14} color="#0284C7" />
+                              <Text style={styles.changePinQuickBtnText}>Đổi PIN</Text>
+                            </TouchableOpacity>
+                          </View>
+
+                          {/* Action Buttons */}
+                          <View style={styles.accountActionsRow}>
+                            <TouchableOpacity
+                              style={styles.accountActionEditBtn}
+                              onPress={() => handleOpenEditAccount(item)}
+                            >
+                              <Ionicons name="pencil" size={14} color="#334155" />
+                              <Text style={styles.accountActionEditText}>Sửa thông tin</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={[
+                                styles.accountActionToggleBtn,
+                                !isActive && styles.accountActionToggleBtnActive,
+                              ]}
+                              onPress={() => handleToggleAccountStatus(item)}
+                            >
+                              <Ionicons
+                                name={isActive ? 'lock-closed-outline' : 'lock-open-outline'}
+                                size={14}
+                                color={isActive ? '#D97706' : '#059669'}
+                              />
+                              <Text
+                                style={[
+                                  styles.accountActionToggleText,
+                                  { color: isActive ? '#D97706' : '#059669' },
+                                ]}
+                              >
+                                {isActive ? 'Tạm khóa' : 'Kích hoạt'}
+                              </Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={styles.accountActionDeleteBtn}
+                              onPress={() => handleDeleteAccount(item)}
+                            >
+                              <Ionicons name="trash-outline" size={14} color="#DC2626" />
+                              <Text style={styles.accountActionDeleteText}>Xóa</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+          </>
+        )}
+
+        {/* Modals Quản lý Tài khoản & Mã PIN (Chỉ hiển thị cho Quản trị viên Admin) */}
+        {isAdmin && (
+          <>
+            <Modal
+          visible={isAccountModalOpen}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setIsAccountModalOpen(false)}
+        >
+          <KeyboardAvoidingView
+            style={styles.nestedModalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.nestedModalCard}>
+              <View style={styles.nestedModalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.nestedModalTitle}>
+                    {editingAccount ? 'Chỉnh sửa tài khoản NCV' : 'Thêm tài khoản NCV mới'}
+                  </Text>
+                  <Text style={styles.nestedModalSubtitle}>
+                    Lưu & đồng bộ trực tiếp vào Cơ sở dữ liệu (CSDL)
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setIsAccountModalOpen(false)}
+                  style={styles.nestedModalCloseBtn}
+                >
+                  <Ionicons name="close" size={20} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView style={styles.nestedModalBody} bounces={false}>
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Họ và tên Nghiên cứu viên / Bác sĩ: *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={accName}
+                    onChangeText={setAccName}
+                    placeholder="VD: BS. Nguyễn Văn A"
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Học vị / Chức danh:</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={accTitle}
+                    onChangeText={setAccTitle}
+                    placeholder="VD: ThS. BS Lâm sàng"
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Email tài khoản: *</Text>
+                  <TextInput
+                    style={styles.formInput}
+                    value={accEmail}
+                    onChangeText={setAccEmail}
+                    placeholder="VD: bs.a@smartvas.vn"
+                    placeholderTextColor="#94A3B8"
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                  />
+                </View>
+
+                <View style={styles.formRow}>
+                  <View style={[styles.formGroup, { flex: 1, marginRight: 8 }]}>
+                    <Text style={styles.label}>Mã PIN nhanh (4 - 6 số): *</Text>
+                    <TextInput
+                      style={[styles.formInput, { fontWeight: '700', letterSpacing: 4 }]}
+                      value={accPin}
+                      onChangeText={setAccPin}
+                      placeholder="VD: 1234"
+                      placeholderTextColor="#94A3B8"
+                      keyboardType="numeric"
+                      maxLength={6}
+                    />
+                  </View>
+
+                  <View style={[styles.formGroup, { flex: 1, marginLeft: 8 }]}>
+                    <Text style={styles.label}>Mật khẩu Email:</Text>
+                    <TextInput
+                      style={styles.formInput}
+                      value={accPassword}
+                      onChangeText={setAccPassword}
+                      placeholder="Mật khẩu"
+                      placeholderTextColor="#94A3B8"
+                      secureTextEntry
+                    />
+                  </View>
+                </View>
+
+                {/* Vai trò */}
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Vai trò / Quyền hạn trong đề tài:</Text>
+                  <View style={styles.choiceRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceBtn,
+                        accRole === 'ncv' && styles.choiceBtnActiveNCV,
+                      ]}
+                      onPress={() => setAccRole('ncv')}
+                    >
+                      <Ionicons
+                        name="person"
+                        size={16}
+                        color={accRole === 'ncv' ? '#0284C7' : '#64748B'}
+                      />
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          accRole === 'ncv' && styles.choiceBtnTextActiveNCV,
+                        ]}
+                      >
+                        Nghiên cứu viên (NCV)
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceBtn,
+                        accRole === 'admin' && styles.choiceBtnActiveAdmin,
+                      ]}
+                      onPress={() => setAccRole('admin')}
+                    >
+                      <Ionicons
+                        name="shield"
+                        size={16}
+                        color={accRole === 'admin' ? '#D97706' : '#64748B'}
+                      />
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          accRole === 'admin' && styles.choiceBtnTextActiveAdmin,
+                        ]}
+                      >
+                        Quản trị viên (Admin)
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Trạng thái hoạt động */}
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Trạng thái tài khoản:</Text>
+                  <View style={styles.choiceRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceBtn,
+                        accIsActive && styles.choiceBtnActiveGreen,
+                      ]}
+                      onPress={() => setAccIsActive(true)}
+                    >
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={16}
+                        color={accIsActive ? '#059669' : '#64748B'}
+                      />
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          accIsActive && { color: '#059669', fontWeight: '700' },
+                        ]}
+                      >
+                        Đang hoạt động
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceBtn,
+                        !accIsActive && styles.choiceBtnActiveGray,
+                      ]}
+                      onPress={() => setAccIsActive(false)}
+                    >
+                      <Ionicons
+                        name="pause-circle"
+                        size={16}
+                        color={!accIsActive ? '#DC2626' : '#64748B'}
+                      />
+                      <Text
+                        style={[
+                          styles.choiceBtnText,
+                          !accIsActive && { color: '#DC2626', fontWeight: '700' },
+                        ]}
+                      >
+                        Tạm khóa
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </ScrollView>
+
+              <View style={styles.nestedModalFooter}>
+                <TouchableOpacity
+                  style={styles.nestedCancelBtn}
+                  onPress={() => setIsAccountModalOpen(false)}
+                >
+                  <Text style={styles.nestedCancelBtnText}>Hủy</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.nestedSubmitBtn}
+                  onPress={handleSaveAccount}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="save-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.nestedSubmitBtnText}>Lưu vào CSDL</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Modal Đổi mã PIN nhanh */}
+        <Modal
+          visible={isPinModalOpen}
+          animationType="fade"
+          transparent={true}
+          onRequestClose={() => setIsPinModalOpen(false)}
+        >
+          <KeyboardAvoidingView
+            style={styles.nestedModalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={[styles.nestedModalCard, { maxHeight: 380 }]}>
+              <View style={styles.nestedModalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.nestedModalTitle}>Đổi mã PIN nhanh</Text>
+                  <Text style={styles.nestedModalSubtitle}>
+                    Cập nhật mã PIN cá nhân cho NCV trên CSDL
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsPinModalOpen(false);
+                    setPinChangeTarget(null);
+                    setNewPinValue('');
+                  }}
+                  style={styles.nestedModalCloseBtn}
+                >
+                  <Ionicons name="close" size={20} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.nestedModalBody}>
+                <View style={styles.quickPinTargetInfo}>
+                  <Ionicons name="person-circle" size={32} color="#0284C7" />
+                  <View style={{ marginLeft: 10 }}>
+                    <Text style={styles.quickPinTargetName}>{pinChangeTarget?.name}</Text>
+                    <Text style={styles.quickPinTargetEmail}>{pinChangeTarget?.email}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.formGroup}>
+                  <Text style={styles.label}>Nhập mã PIN mới (4 - 6 số):</Text>
+                  <TextInput
+                    style={[styles.pinInput, { marginBottom: 4 }]}
+                    value={newPinValue}
+                    onChangeText={setNewPinValue}
+                    placeholder="• • • •"
+                    keyboardType="numeric"
+                    maxLength={6}
+                    textAlign="center"
+                    placeholderTextColor="#94A3B8"
+                    autoFocus={true}
+                  />
+                  <Text style={styles.pinHintUnderText}>
+                    * Mã PIN này sẽ được lưu ngay vào CSDL để đăng nhập nhanh tại giường bệnh.
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.nestedModalFooter}>
+                <TouchableOpacity
+                  style={styles.nestedCancelBtn}
+                  onPress={() => {
+                    setIsPinModalOpen(false);
+                    setPinChangeTarget(null);
+                    setNewPinValue('');
+                  }}
+                >
+                  <Text style={styles.nestedCancelBtnText}>Hủy</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.nestedSubmitBtn}
+                  onPress={handleSaveNewPin}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.nestedSubmitBtnText}>Cập nhật mã PIN</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
           </>
         )}
       </View>
@@ -1559,5 +2308,420 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
     color: '#475569',
+  },
+
+  // Auth Info Note Box
+  authInfoNoteBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 10,
+    padding: 10,
+    gap: 8,
+    marginTop: 4,
+  },
+  authInfoNoteText: {
+    fontSize: 12,
+    color: '#0369A1',
+    flex: 1,
+    lineHeight: 16,
+  },
+
+  // DB Info Banner
+  dbInfoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    gap: 12,
+  },
+  dbInfoIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#E0F2FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dbInfoTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginBottom: 2,
+  },
+  dbInfoDesc: {
+    fontSize: 12,
+    color: '#0284C7',
+    lineHeight: 16,
+  },
+
+  // Account Card
+  accountCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  accountHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  accountAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accountAvatarNCV: {
+    backgroundColor: '#E0F2FE',
+  },
+  accountAvatarAdmin: {
+    backgroundColor: '#FEF3C7',
+  },
+  accountNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  accountNameText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  accountTitleText: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  accountBadgesCol: {
+    alignItems: 'flex-end',
+    gap: 4,
+  },
+  roleTag: {
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  roleTagNCV: {
+    backgroundColor: '#E0F2FE',
+  },
+  roleTagAdmin: {
+    backgroundColor: '#FEF3C7',
+  },
+  roleTagText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  roleTagTextNCV: {
+    color: '#0284C7',
+  },
+  roleTagTextAdmin: {
+    color: '#D97706',
+  },
+  statusTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    borderRadius: 6,
+    gap: 4,
+  },
+  statusTagActive: {
+    backgroundColor: '#ECFDF5',
+  },
+  statusTagInactive: {
+    backgroundColor: '#F1F5F9',
+  },
+  statusDotSmall: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  statusTagText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  accountEmailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 12,
+    paddingLeft: 2,
+  },
+  accountEmailText: {
+    fontSize: 13,
+    color: '#475569',
+  },
+  accountPinBox: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 12,
+  },
+  accountPinLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  accountPinLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  accountPinValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0284C7',
+    letterSpacing: 3,
+    marginLeft: 4,
+  },
+  pinEyeBtn: {
+    padding: 4,
+    marginLeft: 4,
+  },
+  changePinQuickBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E0F2FE',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    gap: 4,
+  },
+  changePinQuickBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  accountActionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 8,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  accountActionEditBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 4,
+  },
+  accountActionEditText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  accountActionToggleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  accountActionToggleBtnActive: {
+    backgroundColor: '#ECFDF5',
+  },
+  accountActionToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  accountActionDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    gap: 4,
+  },
+  accountActionDeleteText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
+
+  // Nested Modal Styles (Add/Edit & PIN)
+  nestedModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  nestedModalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 10,
+    overflow: 'hidden',
+  },
+  nestedModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    backgroundColor: '#F8FAFC',
+  },
+  nestedModalTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  nestedModalSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  nestedModalCloseBtn: {
+    padding: 6,
+    borderRadius: 16,
+    backgroundColor: '#E2E8F0',
+  },
+  nestedModalBody: {
+    padding: 18,
+  },
+  nestedModalFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 10,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    backgroundColor: '#F8FAFC',
+  },
+  nestedCancelBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  nestedCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  nestedSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0284C7',
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+  },
+  nestedSubmitBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  choiceRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  choiceBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#F8FAFC',
+    gap: 6,
+  },
+  choiceBtnActiveNCV: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  choiceBtnActiveAdmin: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#D97706',
+  },
+  choiceBtnActiveGreen: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#059669',
+  },
+  choiceBtnActiveGray: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#DC2626',
+  },
+  choiceBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  choiceBtnTextActiveNCV: {
+    color: '#0284C7',
+    fontWeight: '700',
+  },
+  choiceBtnTextActiveAdmin: {
+    color: '#D97706',
+    fontWeight: '700',
+  },
+  quickPinTargetInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    marginBottom: 16,
+  },
+  quickPinTargetName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  quickPinTargetEmail: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  pinHintUnderText: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 6,
+    lineHeight: 16,
   },
 });

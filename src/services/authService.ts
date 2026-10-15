@@ -1,29 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppUser, UserRole } from '../types';
+import { AppUser, ResearcherAccount } from '../types';
+import { FirebaseService } from './firebaseService';
 
 const AUTH_STORAGE_KEY = '@smart_vas_current_user';
-
-// Danh sách tài khoản Nghiên cứu viên chuẩn được định danh trước
-const DEFAULT_RESEARCHERS: (AppUser & { pass: string; pin: string })[] = [
-  {
-    id: 'ncv-01',
-    email: 'ncv@smartvas.vn',
-    pass: 'ncv123456',
-    pin: '8888',
-    name: 'BS. Nghiên cứu viên Lâm sàng',
-    role: 'ncv',
-    title: 'Nghiên cứu viên (NCV)',
-  },
-  {
-    id: 'admin-01',
-    email: 'admin@smartvas.vn',
-    pass: 'admin123456',
-    pin: '9999',
-    name: 'PGS. TS. Chủ nhiệm Đề tài',
-    role: 'admin',
-    title: 'Quản trị viên Đề tài (Admin)',
-  },
-];
 
 export const AuthService = {
   /**
@@ -39,46 +18,125 @@ export const AuthService = {
   },
 
   /**
-   * Đăng nhập bằng Email & Mật khẩu hoặc Mã PIN nhanh của NCV
+   * Đăng nhập bằng Email & Mật khẩu hoặc Mã PIN nhanh của NCV từ CSDL
    */
   async loginNCV(accountOrPin: string, password?: string): Promise<{ success: boolean; user?: AppUser; error?: string }> {
     const input = accountOrPin.trim();
+    if (!input) {
+      return { success: false, error: 'Vui lòng nhập thông tin xác thực.' };
+    }
 
-    // 1. Kiểm tra đăng nhập nhanh bằng mã PIN 4 số (Dành cho BS thao tác nhanh tại giường bệnh)
-    if (!password) {
-      const foundByPin = DEFAULT_RESEARCHERS.find(r => r.pin === input);
-      if (foundByPin) {
+    try {
+      // 1. Kiểm tra đăng nhập nhanh bằng mã PIN (Dành cho BS thao tác nhanh tại giường bệnh)
+      if (!password) {
+        const found = await FirebaseService.getResearcherByPin(input);
+        if (found) {
+          if (found.is_active === false) {
+            return { success: false, error: 'Tài khoản liên kết với mã PIN này hiện đang bị tạm khóa trong CSDL.' };
+          }
+          const user: AppUser = {
+            id: found.id,
+            email: found.email,
+            name: found.name,
+            role: found.role,
+            title: found.title,
+          };
+          await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+          return { success: true, user };
+        }
+        return { success: false, error: 'Mã PIN không chính xác hoặc chưa được cấp trong CSDL.' };
+      }
+
+      // 2. Kiểm tra đăng nhập bằng Email / Tên tài khoản & Mật khẩu
+      const allResearchers = await FirebaseService.getAllResearchers();
+      const foundByEmail = allResearchers.find(
+        (r) => r.email.trim().toLowerCase() === input.toLowerCase() && r.password === password
+      );
+
+      if (foundByEmail) {
+        if (foundByEmail.is_active === false) {
+          return { success: false, error: 'Tài khoản này hiện đang bị tạm khóa trong CSDL.' };
+        }
         const user: AppUser = {
-          id: foundByPin.id,
-          email: foundByPin.email,
-          name: foundByPin.name,
-          role: foundByPin.role,
-          title: foundByPin.title,
+          id: foundByEmail.id,
+          email: foundByEmail.email,
+          name: foundByEmail.name,
+          role: foundByEmail.role,
+          title: foundByEmail.title,
         };
         await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
         return { success: true, user };
       }
-      return { success: false, error: 'Mã PIN NCV không chính xác (Mặc định: 8888 hoặc 9999)' };
-    }
 
-    // 2. Kiểm tra đăng nhập bằng Email / Tên tài khoản & Mật khẩu
-    const foundByEmail = DEFAULT_RESEARCHERS.find(
-      r => r.email.toLowerCase() === input.toLowerCase() && r.pass === password
+      return { success: false, error: 'Email hoặc mật khẩu không chính xác trong CSDL.' };
+    } catch (e: any) {
+      return { success: false, error: e?.message || 'Lỗi xác thực người dùng từ CSDL' };
+    }
+  },
+
+  /**
+   * Lấy danh sách toàn bộ tài khoản NCV & mã PIN từ CSDL
+   */
+  async getAllResearchers(): Promise<ResearcherAccount[]> {
+    return FirebaseService.getAllResearchers();
+  },
+
+  /**
+   * Tạo mới hoặc cập nhật tài khoản NCV & mã PIN vào CSDL
+   */
+  async saveResearcher(researcher: ResearcherAccount): Promise<{ success: boolean; error?: string }> {
+    // Kiểm tra trùng lặp mã PIN với tài khoản khác
+    const all = await FirebaseService.getAllResearchers();
+    const pinConflict = all.find(
+      (r) => r.id !== researcher.id && r.pin.trim() === researcher.pin.trim()
     );
-
-    if (foundByEmail) {
-      const user: AppUser = {
-        id: foundByEmail.id,
-        email: foundByEmail.email,
-        name: foundByEmail.name,
-        role: foundByEmail.role,
-        title: foundByEmail.title,
-      };
-      await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
-      return { success: true, user };
+    if (pinConflict) {
+      return { success: false, error: `Mã PIN ${researcher.pin} đã được gán cho ${pinConflict.name}. Vui lòng chọn mã PIN khác.` };
     }
 
-    return { success: false, error: 'Email hoặc mật khẩu NCV không đúng.' };
+    // Kiểm tra trùng lặp email với tài khoản khác
+    const emailConflict = all.find(
+      (r) => r.id !== researcher.id && r.email.trim().toLowerCase() === researcher.email.trim().toLowerCase()
+    );
+    if (emailConflict) {
+      return { success: false, error: `Email ${researcher.email} đã tồn tại trong hệ thống. Vui lòng chọn email khác.` };
+    }
+
+    return FirebaseService.saveResearcher(researcher);
+  },
+
+  /**
+   * Xóa tài khoản NCV khỏi CSDL
+   */
+  async deleteResearcher(id: string): Promise<{ success: boolean; error?: string }> {
+    return FirebaseService.deleteResearcher(id);
+  },
+
+  /**
+   * Cập nhật mã PIN nhanh cho tài khoản NCV
+   */
+  async updatePin(id: string, newPin: string): Promise<{ success: boolean; error?: string }> {
+    const trimmedPin = newPin.trim();
+    if (!trimmedPin || trimmedPin.length < 4 || trimmedPin.length > 6 || !/^\d+$/.test(trimmedPin)) {
+      return { success: false, error: 'Mã PIN phải gồm từ 4 đến 6 chữ số.' };
+    }
+
+    const all = await FirebaseService.getAllResearchers();
+    const pinConflict = all.find((r) => r.id !== id && r.pin.trim() === trimmedPin);
+    if (pinConflict) {
+      return { success: false, error: `Mã PIN ${trimmedPin} đã được gán cho ${pinConflict.name}. Vui lòng chọn mã khác.` };
+    }
+
+    const target = all.find((r) => r.id === id);
+    if (!target) {
+      return { success: false, error: 'Không tìm thấy tài khoản cần đổi mã PIN.' };
+    }
+
+    return FirebaseService.saveResearcher({
+      ...target,
+      pin: trimmedPin,
+      updated_at: new Date().toISOString(),
+    });
   },
 
   /**

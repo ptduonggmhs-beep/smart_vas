@@ -91,7 +91,7 @@ export const ContextScreen: React.FC<ContextScreenProps> = ({
       <View style={styles.clinicalRecommendation}>
         <Ionicons name="information-circle-outline" size={18} color="#64748B" style={{ marginRight: 6 }} />
         <Text style={styles.clinicalRecText}>
-          Khuyến nghị: Để đồng bộ với các thang điểm VAS giấy truyền thống, lần đánh giá chính nên chuẩn hóa là "đau lúc nghỉ".
+          Khuyến nghị: Để đồng bộ với các thang điểm VAS giấy truyền thống, lần đánh giá chính nên chuẩn hóa là {'"đau lúc nghỉ"'}.
         </Text>
       </View>
     </ScrollView>

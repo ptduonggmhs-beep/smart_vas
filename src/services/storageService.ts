@@ -1,14 +1,41 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Assessment, Patient } from '../types';
+import { Assessment, Patient, ResearcherAccount } from '../types';
 
 const STORAGE_KEYS = {
   ASSESSMENTS: '@smart_vas_assessments',
   PATIENTS: '@smart_vas_patients',
+  RESEARCHERS: '@smart_vas_researchers',
   CURRENT_TIMEPOINT: '@smart_vas_current_timepoint',
   CURRENT_ASSISTANCE: '@smart_vas_current_assistance',
   CUSTOM_FIREBASE_KEY: '@smart_vas_custom_firebase_key',
   CACHED_PATIENT_STUDY_ID: '@smart_vas_cached_patient_study_id',
 };
+
+export const INITIAL_SEED_RESEARCHERS: ResearcherAccount[] = [
+  {
+    id: 'admin-01',
+    email: 'admin@smartvas.vn',
+    name: 'PGS. TS. Chủ nhiệm Đề tài',
+    role: 'admin',
+    title: 'Quản trị viên Đề tài (Admin)',
+    pin: '9999',
+    password: 'admin123456',
+    created_at: new Date().toISOString(),
+    is_active: true,
+  },
+  {
+    id: 'ncv-01',
+    email: 'ncv@smartvas.vn',
+    name: 'BS. Nghiên cứu viên Lâm sàng',
+    role: 'ncv',
+    title: 'Nghiên cứu viên (NCV)',
+    pin: '8888',
+    password: 'ncv123456',
+    created_at: new Date().toISOString(),
+    is_active: true,
+  },
+];
+
 
 export const StorageService = {
   // --- Assessments ---
@@ -114,6 +141,66 @@ export const StorageService = {
     const list = await this.getLocalPatients();
     return list.find(p => p.study_id.toUpperCase() === studyId.trim().toUpperCase());
   },
+
+  // --- Researchers & PINs ---
+  async getLocalResearchers(): Promise<ResearcherAccount[]> {
+    try {
+      const data = await AsyncStorage.getItem(STORAGE_KEYS.RESEARCHERS);
+      if (data) {
+        return JSON.parse(data);
+      }
+      // Dữ liệu tài khoản ban đầu cho CSDL nếu bộ nhớ hoàn toàn trống
+      await AsyncStorage.setItem(STORAGE_KEYS.RESEARCHERS, JSON.stringify(INITIAL_SEED_RESEARCHERS));
+      return INITIAL_SEED_RESEARCHERS;
+    } catch (e) {
+      console.error('Error reading local researchers:', e);
+      return INITIAL_SEED_RESEARCHERS;
+    }
+  },
+
+  async saveLocalResearcher(account: ResearcherAccount): Promise<void> {
+    try {
+      const list = await this.getLocalResearchers();
+      const index = list.findIndex(r => r.id === account.id);
+      if (index >= 0) {
+        list[index] = { ...list[index], ...account };
+      } else {
+        list.push(account);
+      }
+      await AsyncStorage.setItem(STORAGE_KEYS.RESEARCHERS, JSON.stringify(list));
+    } catch (e) {
+      console.error('Error saving local researcher:', e);
+    }
+  },
+
+  async saveAllLocalResearchers(accounts: ResearcherAccount[]): Promise<void> {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.RESEARCHERS, JSON.stringify(accounts));
+    } catch (e) {
+      console.error('Error saving all local researchers:', e);
+    }
+  },
+
+  async deleteLocalResearcher(id: string): Promise<void> {
+    try {
+      const list = await this.getLocalResearchers();
+      const filtered = list.filter(r => r.id !== id);
+      await AsyncStorage.setItem(STORAGE_KEYS.RESEARCHERS, JSON.stringify(filtered));
+    } catch (e) {
+      console.error('Error deleting local researcher:', e);
+    }
+  },
+
+  async getLocalResearcherByPin(pin: string): Promise<ResearcherAccount | undefined> {
+    const list = await this.getLocalResearchers();
+    return list.find(r => r.pin.trim() === pin.trim() && r.is_active !== false);
+  },
+
+  async getLocalResearcherByEmail(email: string): Promise<ResearcherAccount | undefined> {
+    const list = await this.getLocalResearchers();
+    return list.find(r => r.email.toLowerCase().trim() === email.toLowerCase().trim() && r.is_active !== false);
+  },
+
 
   // --- Settings & Meta ---
   async getSetting(key: string, defaultValue: string = ''): Promise<string> {
