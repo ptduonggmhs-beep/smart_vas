@@ -31,11 +31,13 @@
       }
     },
     "owner": "vdkhanh3112",
-    "runtimeVersion": "1.0.0",
     "updates": {
       "enabled": true,
       "fallbackToCacheTimeout": 0,
       "url": "https://u.expo.dev/45625325-89ce-4871-9c5d-08d01cf3b45c"
+    },
+    "runtimeVersion": {
+      "policy": "sdkVersion"
     }
   }
 }
