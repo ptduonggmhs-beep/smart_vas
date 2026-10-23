@@ -236,7 +236,7 @@ export const FirebaseService = {
       `"${a.submit_timestamp}"`,
       a.duration_seconds,
       `"${a.completion_status}"`,
-      `"${a.assistance_status === 'self' ? 'Tự làm' : 'Có hỗ trợ'}"`,
+      `"${a.assistance_status === 'self' ? 'Sản phụ tự làm' : 'NCV trợ giúp'}"`,
       `"${a.device_type}"`,
       `"${a.app_version}"`,
       `"${a.save_status}"`,

@@ -37,7 +37,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
   const [isCheckingCode, setIsCheckingCode] = useState<boolean>(false);
 
   const selectedTimepoint: TimePoint = 'T1';
-  const [assistance, setAssistance] = useState<AssistanceStatus>('self');
+  const assistance: AssistanceStatus = 'assisted';
 
   // Đọc mã người tham gia đã lưu cache trước đó
   useEffect(() => {
@@ -83,7 +83,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
       setStudyId(trimmed);
       setIsUsingSavedId(true);
       setIsCheckingCode(false);
-    } catch (e: any) {
+    } catch {
       setIsCheckingCode(false);
       Alert.alert('Lỗi kiểm tra', 'Không thể xác thực mã người tham gia. Vui lòng thử lại.');
     }
@@ -124,7 +124,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
       setIsValidating(false);
 
       onStart(trimmed, selectedTimepoint, assistance);
-    } catch (e: any) {
+    } catch {
       setIsValidating(false);
       Alert.alert('Lỗi kiểm tra', 'Không thể xác thực mã người tham gia. Vui lòng thử lại.');
     }
@@ -291,56 +291,6 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
           </View>
         )}
 
-        {/* Assistance status toggle */}
-        <View style={styles.cardSecondary}>
-          <Text style={styles.assistanceTitle}>Hình thức thao tác:</Text>
-          <View style={styles.assistanceButtons}>
-            <TouchableOpacity
-              style={[
-                styles.assistBtn,
-                assistance === 'self' && styles.assistBtnActive,
-              ]}
-              onPress={() => setAssistance('self')}
-            >
-              <Ionicons
-                name="person-outline"
-                size={16}
-                color={assistance === 'self' ? '#0284C7' : '#64748B'}
-                style={{ marginRight: 6 }}
-              />
-              <Text
-                style={[
-                  styles.assistBtnText,
-                  assistance === 'self' && styles.assistBtnTextActive,
-                ]}
-              >
-                Sản phụ tự làm
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.assistBtn,
-                assistance === 'assisted' && styles.assistBtnActive,
-              ]}
-              onPress={() => setAssistance('assisted')}
-            >
-              <Ionicons
-                name="medkit-outline"
-                size={16}
-                color={assistance === 'assisted' ? '#0284C7' : '#64748B'}
-                style={{ marginRight: 6 }}
-              />
-              <Text
-                style={[
-                  styles.assistBtnText,
-                  assistance === 'assisted' && styles.assistBtnTextActive,
-                ]}
-              >
-                Có NCV trợ giúp
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
 
         {/* Bottom CTA Button */}
         <View style={styles.bottomSection}>
@@ -671,46 +621,6 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
 
-  // Secondary Timepoint Card
-  cardSecondary: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  assistanceTitle: {
-    fontSize: 13,
-    color: '#64748B',
-    marginBottom: 8,
-  },
-  assistanceButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  assistBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  assistBtnActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
-  },
-  assistBtnText: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#64748B',
-  },
-  assistBtnTextActive: {
-    color: '#0369A1',
-    fontWeight: '700',
-  },
   bottomSection: {
     marginTop: 8,
   },

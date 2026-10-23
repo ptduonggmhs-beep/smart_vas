@@ -40,7 +40,7 @@ export default function App() {
   // Current Assessment Session State
   const [studyId, setStudyId] = useState<string>('CS001');
   const [timepoint, setTimepoint] = useState<TimePoint>('T1');
-  const [assistance, setAssistance] = useState<AssistanceStatus>('self');
+  const [assistance, setAssistance] = useState<AssistanceStatus>('assisted');
   const [assessmentId, setAssessmentId] = useState<string>('');
   const [startTimestamp, setStartTimestamp] = useState<string>('');
   const [painContext, setPainContext] = useState<PainContext>('nghi');
