@@ -17,6 +17,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { Assessment, Patient, AppUser, ResearcherAccount, UserRole } from '../types';
 import { FirebaseService } from '../services/firebaseService';
 import { AuthService } from '../services/authService';
+import {
+  getCalibratedVASHeight,
+  getStoredCalibrationFactor,
+  saveCalibrationFactor,
+  resetCalibrationFactor,
+  getDisplayDiagnostics,
+  VAS_CLINICAL_LENGTH_MM,
+  REFERENCE_CARD_LENGTH_MM,
+  mmToPixels,
+} from '../utils/physicalScale';
 
 interface ResearcherModalProps {
   visible: boolean;
@@ -31,10 +41,12 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   currentUser,
   onUserChanged,
 }) => {
-  const [activeTab, setActiveTab] = useState<'assessments' | 'patients' | 'accounts'>('assessments');
+  const [activeTab, setActiveTab] = useState<'assessments' | 'patients' | 'accounts' | 'calibration'>('assessments');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [researchers, setResearchers] = useState<ResearcherAccount[]>([]);
+  const [calibrationFactor, setCalibrationFactor] = useState<number>(1.0);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [filterStudyId, setFilterStudyId] = useState<string>('');
   const [filterPatientId, setFilterPatientId] = useState<string>('');
@@ -124,6 +136,12 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     }
     if (!isAdmin && activeTab === 'accounts') {
       setActiveTab('assessments');
+    }
+    if (visible) {
+      getStoredCalibrationFactor().then((f) => {
+        setCalibrationFactor(f);
+        setDiagnostics(getDisplayDiagnostics(f));
+      });
     }
     setAuthError('');
   }, [visible, isAuthorized, isAdmin]);
@@ -812,6 +830,20 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   </Text>
                 </TouchableOpacity>
               )}
+
+              <TouchableOpacity
+                style={[styles.tabItem, activeTab === 'calibration' && styles.tabItemActive]}
+                onPress={() => setActiveTab('calibration')}
+              >
+                <Ionicons
+                  name="resize-outline"
+                  size={18}
+                  color={activeTab === 'calibration' ? '#0284C7' : '#64748B'}
+                />
+                <Text style={[styles.tabText, activeTab === 'calibration' && styles.tabTextActive]}>
+                  Hiệu chuẩn 10cm
+                </Text>
+              </TouchableOpacity>
             </View>
 
             {/* Tab 1: Assessments */}
@@ -1596,6 +1628,172 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   </ScrollView>
                 )}
               </View>
+            )}
+
+            {/* Tab 4: Hiệu chuẩn Thước đo 10cm */}
+            {activeTab === 'calibration' && (
+              <ScrollView style={styles.tabContent} bounces={false}>
+                <View style={styles.calibCard}>
+                  <View style={styles.calibHeaderRow}>
+                    <Ionicons name="shield-checkmark" size={20} color="#0284C7" />
+                    <Text style={styles.calibHeaderTitle}>Chuẩn hóa Kích thước Đo Lường Lâm Sàng</Text>
+                  </View>
+                  <Text style={styles.calibDescription}>
+                    Thang đo VAS hướng dọc trên ứng dụng bắt buộc phải đạt chính xác <Text style={{ fontWeight: '800' }}>10,0 cm (100 mm)</Text> thực tế trên mọi thiết bị điện thoại, đảm bảo độ giá trị tương đồng 1:1 với thang đo giấy trong đề tài nghiên cứu.
+                  </Text>
+
+                  <View style={styles.calibStepBox}>
+                    <Text style={styles.calibStepText}>
+                      👉 <Text style={{ fontWeight: '700' }}>Hướng dẫn:</Text> Đặt một chiếc thước kẻ milimet cơ học áp sát màn hình từ vạch 0 đến vạch 100 của thước màu đỏ bên dưới. Nếu có sai lệch do kính cường lực, dùng các nút +/- 0.5mm để tinh chỉnh.
+                    </Text>
+                  </View>
+
+                  {/* Nút điều chỉnh */}
+                  <View style={styles.calibAdjustRow}>
+                    <TouchableOpacity
+                      style={styles.calibAdjustBtn}
+                      onPress={() => {
+                        const newF = Math.max(0.7, Math.min(1.3, Math.round((calibrationFactor - 0.005) * 1000) / 1000));
+                        setCalibrationFactor(newF);
+                        setDiagnostics(getDisplayDiagnostics(newF));
+                      }}
+                    >
+                      <Ionicons name="remove-circle-outline" size={18} color="#DC2626" />
+                      <Text style={styles.calibAdjustBtnText}>- 0.5 mm</Text>
+                    </TouchableOpacity>
+
+                    <View style={{ alignItems: 'center' }}>
+                      <Text style={styles.calibValueText}>
+                        {(VAS_CLINICAL_LENGTH_MM * calibrationFactor).toFixed(1)} mm
+                      </Text>
+                      <Text style={styles.calibSubText}>
+                        ({getCalibratedVASHeight(calibrationFactor)} pt • {(calibrationFactor * 100).toFixed(1)}%)
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.calibAdjustBtn}
+                      onPress={() => {
+                        const newF = Math.max(0.7, Math.min(1.3, Math.round((calibrationFactor + 0.005) * 1000) / 1000));
+                        setCalibrationFactor(newF);
+                        setDiagnostics(getDisplayDiagnostics(newF));
+                      }}
+                    >
+                      <Ionicons name="add-circle-outline" size={18} color="#10B981" />
+                      <Text style={styles.calibAdjustBtnText}>+ 0.5 mm</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.calibSecondaryRow}>
+                    <TouchableOpacity
+                      style={styles.calibSecondaryBtn}
+                      onPress={async () => {
+                        await resetCalibrationFactor();
+                        setCalibrationFactor(1.0);
+                        setDiagnostics(getDisplayDiagnostics(1.0));
+                        Alert.alert('Khôi phục thành công', 'Đã đặt lại kích thước theo chuẩn tự động của hệ thống.');
+                      }}
+                    >
+                      <Ionicons name="refresh" size={14} color="#64748B" />
+                      <Text style={styles.calibSecondaryBtnText}>Đặt lại Mặc định (100mm)</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.calibSaveBtn}
+                      onPress={async () => {
+                        await saveCalibrationFactor(calibrationFactor);
+                        Alert.alert('✅ Đã lưu', 'Kích thước thước đo 10cm đã được cập nhật thành công cho mọi phiên đo.');
+                      }}
+                    >
+                      <Ionicons name="save-outline" size={16} color="#FFFFFF" />
+                      <Text style={styles.calibSaveBtnText}>Lưu Hiệu Chuẩn</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Vùng Thước kẻ trực quan 10cm */}
+                <View style={styles.calibRulerCard}>
+                  <Text style={styles.calibRulerTitle}>Đối chiếu Thước 10,0 cm (1:1 Thực tế)</Text>
+
+                  <View style={styles.calibRulerArea}>
+                    {/* Thước milimet */}
+                    <View style={[styles.calibVirtualRuler, { height: getCalibratedVASHeight(calibrationFactor) }]}>
+                      {Array.from({ length: 11 }).map((_, cm) => {
+                        const top = ((10 - cm) / 10) * getCalibratedVASHeight(calibrationFactor);
+                        const isMajor = cm === 0 || cm === 5 || cm === 10;
+                        return (
+                          <View key={`cm-calib-${cm}`} style={[styles.calibTickRow, { top: top - 1 }]}>
+                            <View
+                              style={[
+                                styles.calibTickLine,
+                                {
+                                  width: isMajor ? 20 : 12,
+                                  backgroundColor: isMajor ? '#0F172A' : '#64748B',
+                                  height: isMajor ? 2.5 : 1.5,
+                                },
+                              ]}
+                            />
+                            <Text style={[styles.calibTickText, isMajor && styles.calibTickTextMajor]}>
+                              {cm} cm
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Thanh VAS đỏ */}
+                    <View style={styles.calibVasCol}>
+                      <View style={styles.calibStopperTop} />
+                      <View style={[styles.calibVasBar, { height: getCalibratedVASHeight(calibrationFactor) }]} />
+                      <View style={styles.calibStopperBottom} />
+                    </View>
+
+                    {/* Thẻ CCCD đối chiếu 85.6mm */}
+                    <View style={styles.calibCardRefCol}>
+                      <View style={[styles.calibCardRefBox, { height: mmToPixels(REFERENCE_CARD_LENGTH_MM, calibrationFactor) }]}>
+                        <Ionicons name="card-outline" size={16} color="#0284C7" />
+                        <Text style={styles.calibCardRefTitle}>Thẻ CCCD / ATM</Text>
+                        <Text style={styles.calibCardRefMm}>85.6 mm</Text>
+                        <Text style={styles.calibCardRefSub}>(ISO 7810)</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Thông số chẩn đoán thiết bị */}
+                {diagnostics && (
+                  <View style={styles.calibDiagCard}>
+                    <Text style={styles.calibDiagTitle}>Thông số Màn hình Thiết bị</Text>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Hệ điều hành:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.os?.toUpperCase()}</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Độ phân giải màn hình:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.screenWidth} × {diagnostics.screenHeight} pt/dp</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Mật độ điểm ảnh (PixelRatio):</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.pixelRatio}x</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Tỉ lệ quy đổi mm:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.basePointsPerMm} pt/mm</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Chiều cao VAS 100mm xuất xưởng:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.calculatedHeight100mm} pt/dp</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Chiều cao VAS sau hiệu chuẩn:</Text>
+                      <Text style={[styles.calibDiagVal, { color: '#0284C7', fontWeight: '800' }]}>
+                        {diagnostics.finalCalibratedHeight} pt/dp
+                      </Text>
+                    </View>
+                  </View>
+                )}
+                <View style={{ height: 40 }} />
+              </ScrollView>
             )}
           </>
         )}
@@ -3164,5 +3362,244 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 6,
     lineHeight: 16,
+  },
+
+  // Calibration Tab Styles
+  calibCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  calibHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  calibDescription: {
+    fontSize: 13,
+    color: '#334155',
+    lineHeight: 19,
+  },
+  calibStepBox: {
+    marginTop: 10,
+    backgroundColor: '#F0F9FF',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  calibStepText: {
+    fontSize: 12,
+    color: '#0369A1',
+    lineHeight: 18,
+  },
+  calibAdjustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  calibAdjustBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  calibAdjustBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  calibValueText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0284C7',
+  },
+  calibSubText: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  calibSecondaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  calibSecondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  calibSecondaryBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  calibSaveBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#0284C7',
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  calibSaveBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  calibRulerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibRulerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  calibRulerArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  calibVirtualRuler: {
+    position: 'relative',
+    width: 110,
+    borderRightWidth: 1.5,
+    borderRightColor: '#CBD5E1',
+  },
+  calibTickRow: {
+    position: 'absolute',
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  calibTickLine: {
+    borderRadius: 1,
+  },
+  calibTickText: {
+    fontSize: 9,
+    color: '#64748B',
+    marginLeft: 4,
+  },
+  calibTickTextMajor: {
+    fontWeight: '800',
+    color: '#0F172A',
+    fontSize: 10,
+  },
+  calibVasCol: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  calibStopperTop: {
+    width: 32,
+    height: 3.5,
+    backgroundColor: '#DC2626',
+    borderRadius: 2,
+  },
+  calibStopperBottom: {
+    width: 32,
+    height: 3.5,
+    backgroundColor: '#10B981',
+    borderRadius: 2,
+  },
+  calibVasBar: {
+    width: 14,
+    backgroundColor: '#DC2626',
+    borderRadius: 7,
+  },
+  calibCardRefCol: {
+    width: 90,
+    alignItems: 'center',
+  },
+  calibCardRefBox: {
+    width: 82,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1.5,
+    borderColor: '#0284C7',
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+  },
+  calibCardRefTitle: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  calibCardRefMm: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0284C7',
+    marginTop: 2,
+  },
+  calibCardRefSub: {
+    fontSize: 8,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  calibDiagCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibDiagTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  calibDiagRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  calibDiagLabel: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  calibDiagVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
   },
 });
