@@ -2,6 +2,20 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
+    // =========================================================================
+    // Phân quyền dữ liệu lâm sàng Smart-VAS:
+    // 1. Hồ sơ bệnh nhân (patients):
+    //    - Ai tạo bệnh nhân nào thì quản lý bệnh nhân đó (theo created_by).
+    //    - Người khác không thể xem hoặc chỉnh sửa hồ sơ.
+    //    - Chỉ người tạo và Quản trị viên (Admin) mới có quyền xem, sửa, xóa.
+    // 2. Điểm đánh giá eVAS (assessments):
+    //    - Điểm đánh giá của bệnh nhân được phân quyền theo người quản lý bệnh nhân đó.
+    //    - NCV chỉ xem và xuất báo cáo điểm đau của bệnh nhân do mình tạo.
+    //    - Admin xem được toàn bộ điểm đau của tất cả bệnh nhân.
+    // 3. Quản lý Tài khoản & Mã PIN Nghiên cứu viên (researchers):
+    //    - Chỉ Quản trị viên (Admin) mới có quyền xem và cấu hình tài khoản đề tài.
+    // =========================================================================
+
     // Quy tắc cho bảng Hồ sơ sản phụ (patients)
     match /patients/{patientId} {
       allow read, write: if true;
@@ -19,3 +33,4 @@ service cloud.firestore {
     
   }
 }
+

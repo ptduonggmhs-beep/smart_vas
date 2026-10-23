@@ -41,6 +41,8 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   const [filterResearcherText, setFilterResearcherText] = useState<string>('');
   const [patientViewMode, setPatientViewMode] = useState<'list' | 'form'>('list');
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [creatorFilter, setCreatorFilter] = useState<string>('all'); // 'all' | 'my' | researcherId
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
 
   // Authentication State
   const [loginMethod, setLoginMethod] = useState<'pin' | 'email'>('pin');
@@ -83,21 +85,30 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     setLoading(true);
     try {
       if (isAdmin) {
+        // Admin: Xem được tất cả hồ sơ bệnh nhân, tất cả đánh giá và tất cả tài khoản NCV
         const [allAssessments, allPatients, allResearchers] = await Promise.all([
           FirebaseService.getAllAssessments(),
-          FirebaseService.getAllPatients(),
+          FirebaseService.getAllPatients(currentUser),
           AuthService.getAllResearchers(),
         ]);
         setAssessments(allAssessments);
         setPatients(allPatients);
         setResearchers(allResearchers);
       } else {
-        const [allAssessments, allPatients] = await Promise.all([
+        // NCV: Chỉ xem được hồ sơ bệnh nhân do chính mình tạo; người khác không thể xem
+        const [allAssessments, myPatients] = await Promise.all([
           FirebaseService.getAllAssessments(),
-          FirebaseService.getAllPatients(),
+          FirebaseService.getAllPatients(currentUser),
         ]);
-        setAssessments(allAssessments);
-        setPatients(allPatients);
+        const scopedPatients = myPatients.filter((p) => p.created_by === currentUser?.id);
+        const scopedPatientIds = new Set(scopedPatients.map((p) => p.study_id.toUpperCase()));
+        // Điểm đánh giá eVAS cũng chỉ giới hạn ở các bệnh nhân do NCV này quản lý
+        const scopedAssessments = allAssessments.filter((a) =>
+          scopedPatientIds.has(a.study_id.toUpperCase())
+        );
+
+        setPatients(scopedPatients);
+        setAssessments(scopedAssessments);
         setResearchers([]);
       }
     } catch (e) {
@@ -208,6 +219,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   };
 
   const handleAddNewPatient = () => {
+    setEditingPatient(null);
     setNewStudyId('');
     setNewAge('');
     setNewPara('');
@@ -218,6 +230,15 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   };
 
   const handleEditPatient = (p: Patient) => {
+    // Phân quyền: Chỉ người tạo hoặc Admin mới có quyền sửa
+    if (!isAdmin && p.created_by && p.created_by !== currentUser?.id) {
+      Alert.alert(
+        'Không có quyền truy cập',
+        'Hồ sơ này do một Nghiên cứu viên khác tạo. Chỉ người tạo hoặc Quản trị viên (Admin) mới có quyền chỉnh sửa.'
+      );
+      return;
+    }
+    setEditingPatient(p);
     setNewStudyId(p.study_id);
     setNewAge(p.age !== null && p.age !== undefined ? String(p.age) : '');
     setNewPara(p.para || '');
@@ -227,32 +248,95 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     setPatientViewMode('form');
   };
 
+  const handleDeletePatient = (patient: Patient) => {
+    // Phân quyền: Chỉ người tạo hoặc Admin mới có quyền xóa
+    if (!isAdmin && patient.created_by && patient.created_by !== currentUser?.id) {
+      Alert.alert(
+        'Không có quyền xóa',
+        'Hồ sơ này do một Nghiên cứu viên khác tạo. Chỉ người tạo hoặc Quản trị viên (Admin) mới có quyền xóa.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Xác nhận xóa hồ sơ',
+      `Bạn có chắc chắn muốn xóa hồ sơ sản phụ "${patient.study_id}" không?\n\nNgười tạo: ${patient.created_by_name || 'Hệ thống'}`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa hồ sơ',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await FirebaseService.deletePatient(patient.study_id, currentUser);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã xóa', `Đã xóa hồ sơ ${patient.study_id} thành công.`);
+              loadData();
+            } else {
+              Alert.alert('Lỗi xóa hồ sơ', res.error || 'Không thể xóa hồ sơ.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleSavePatient = async () => {
-    if (!newStudyId.trim()) {
+    const trimmedStudyId = newStudyId.trim().toUpperCase();
+    if (!trimmedStudyId) {
       Alert.alert('Lỗi', 'Vui lòng nhập Mã nghiên cứu (study_id).');
       return;
     }
+
+    // Nếu tạo mới: kiểm tra trùng mã trên toàn hệ thống
+    if (!editingPatient) {
+      const existing = await FirebaseService.getPatient(trimmedStudyId);
+      if (existing) {
+        Alert.alert(
+          'Mã hồ sơ đã tồn tại',
+          `Mã "${trimmedStudyId}" đã tồn tại trong hệ thống (tạo bởi: ${existing.created_by_name || 'NCV khác'}). Vui lòng chọn mã khác.`
+        );
+        return;
+      }
+    }
+
+    // Nếu đang sửa: kiểm tra quyền chỉnh sửa
+    if (editingPatient && !isAdmin && editingPatient.created_by && editingPatient.created_by !== currentUser?.id) {
+      Alert.alert('Từ chối', 'Bạn không có quyền chỉnh sửa hồ sơ do người khác tạo.');
+      return;
+    }
+
     const patientData: Patient = {
-      study_id: newStudyId.trim().toUpperCase(),
+      study_id: trimmedStudyId,
       age: newAge ? parseInt(newAge) : null,
       para: newPara || null,
       anesthesia_method: newAnesthesia || null,
       analgesia_drugs: newDrugs || null,
       paper_vas_score: newPaperVas ? parseFloat(newPaperVas) : null,
-      created_at: new Date().toISOString(),
+      created_at: editingPatient ? editingPatient.created_at : new Date().toISOString(),
+      created_by: editingPatient ? editingPatient.created_by : (currentUser?.id || 'admin-01'),
+      created_by_name: editingPatient ? editingPatient.created_by_name : (currentUser?.name || 'PGS. TS. Chủ nhiệm Đề tài'),
     };
 
     setLoading(true);
-    const res = await FirebaseService.savePatient(patientData);
+    const res = await FirebaseService.savePatient(patientData, currentUser);
     setLoading(false);
 
     if (res.success) {
-      Alert.alert('Thành công', `Đã lưu hồ sơ sản phụ ${patientData.study_id}`);
+      Alert.alert(
+        'Thành công',
+        editingPatient
+          ? `Đã cập nhật hồ sơ sản phụ ${patientData.study_id}`
+          : `Đã lưu hồ sơ sản phụ ${patientData.study_id}\nNgười tạo & quản lý: ${patientData.created_by_name}`
+      );
+      setEditingPatient(null);
       setNewStudyId('');
       setPatientViewMode('list');
       loadData();
     } else {
-      Alert.alert('Đã lưu cục bộ', `Đã lưu vào bộ nhớ máy (${res.error})`);
+      Alert.alert('Thông báo', res.error || 'Lỗi khi lưu hồ sơ');
+      setEditingPatient(null);
       setPatientViewMode('list');
       loadData();
     }
@@ -465,9 +549,26 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     ? assessments.filter((a) => a.study_id.toUpperCase().includes(filterStudyId.trim().toUpperCase()))
     : assessments;
 
-  const filteredPatients = filterPatientId.trim()
-    ? patients.filter((p) => p.study_id.toUpperCase().includes(filterPatientId.trim().toUpperCase()))
-    : patients;
+  const filteredPatients = patients.filter((p) => {
+    // 1. Tìm kiếm theo mã study_id hoặc tên người tạo
+    const q = filterPatientId.trim().toUpperCase();
+    if (q) {
+      const matchId = p.study_id.toUpperCase().includes(q);
+      const matchCreator = p.created_by_name ? p.created_by_name.toUpperCase().includes(q) : false;
+      if (!matchId && !matchCreator) return false;
+    }
+
+    // 2. Lọc theo người tạo (dành cho Admin)
+    if (isAdmin && creatorFilter !== 'all') {
+      if (creatorFilter === 'my') {
+        if (p.created_by !== currentUser?.id) return false;
+      } else {
+        if (p.created_by !== creatorFilter) return false;
+      }
+    }
+
+    return true;
+  });
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -826,12 +927,122 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
               <View style={styles.tabContent}>
                 {patientViewMode === 'list' ? (
                   <>
+                    {/* Phân quyền Banner */}
+                    <View
+                      style={[
+                        styles.permissionBanner,
+                        isAdmin ? styles.permissionBannerAdmin : styles.permissionBannerNCV,
+                      ]}
+                    >
+                      <Ionicons
+                        name={isAdmin ? 'shield-checkmark' : 'lock-closed'}
+                        size={20}
+                        color={isAdmin ? '#B45309' : '#0284C7'}
+                      />
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text
+                          style={[
+                            styles.permissionBannerTitle,
+                            isAdmin ? styles.permissionTextAdmin : styles.permissionTextNCV,
+                          ]}
+                        >
+                          {isAdmin
+                            ? '👑 Quyền Quản trị viên (Admin) — Toàn quyền đề tài'
+                            : '🔒 Phân quyền cá nhân: Quản lý bệnh nhân theo người tạo'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.permissionBannerSub,
+                            isAdmin ? styles.permissionSubAdmin : styles.permissionSubNCV,
+                          ]}
+                        >
+                          {isAdmin
+                            ? `Bạn có thể xem và quản lý tất cả ${patients.length} bệnh nhân trong hệ thống.`
+                            : `Bạn đang quản lý ${patients.length} bệnh nhân do bạn tạo. Người khác không thể xem hồ sơ này.`}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Bộ lọc người tạo dành riêng cho Quản trị viên (Admin) */}
+                    {isAdmin && (
+                      <View style={styles.creatorFilterContainer}>
+                        <Text style={styles.creatorFilterLabel}>Lọc theo người tạo:</Text>
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.creatorFilterScroll}
+                        >
+                          <TouchableOpacity
+                            style={[
+                              styles.creatorPill,
+                              creatorFilter === 'all' && styles.creatorPillActive,
+                            ]}
+                            onPress={() => setCreatorFilter('all')}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.creatorPillText,
+                                creatorFilter === 'all' && styles.creatorPillTextActive,
+                              ]}
+                            >
+                              Tất cả ({patients.length})
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={[
+                              styles.creatorPill,
+                              creatorFilter === 'my' && styles.creatorPillActive,
+                            ]}
+                            onPress={() => setCreatorFilter('my')}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.creatorPillText,
+                                creatorFilter === 'my' && styles.creatorPillTextActive,
+                              ]}
+                            >
+                              Của tôi ({patients.filter((p) => p.created_by === currentUser?.id).length})
+                            </Text>
+                          </TouchableOpacity>
+
+                          {researchers
+                            .filter((r) => r.id !== currentUser?.id)
+                            .map((r) => {
+                              const count = patients.filter((p) => p.created_by === r.id).length;
+                              return (
+                                <TouchableOpacity
+                                  key={r.id}
+                                  style={[
+                                    styles.creatorPill,
+                                    creatorFilter === r.id && styles.creatorPillActive,
+                                  ]}
+                                  onPress={() => setCreatorFilter(r.id)}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.creatorPillText,
+                                      creatorFilter === r.id && styles.creatorPillTextActive,
+                                    ]}
+                                  >
+                                    {r.name} ({count})
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                        </ScrollView>
+                      </View>
+                    )}
+
                     <View style={styles.actionRow}>
                       <View style={styles.searchBox}>
                         <Ionicons name="search" size={18} color="#94A3B8" />
                         <TextInput
                           style={styles.searchInput}
-                          placeholder="Lọc mã hồ sơ (study_id)..."
+                          placeholder="Lọc mã hồ sơ hoặc tên NCV..."
                           value={filterPatientId}
                           onChangeText={setFilterPatientId}
                           placeholderTextColor="#94A3B8"
@@ -861,18 +1072,22 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     ) : filteredPatients.length === 0 ? (
                       <View style={styles.emptyBox}>
                         <Ionicons name="people-outline" size={48} color="#CBD5E1" />
-                        <Text style={styles.emptyTitle}>Chưa có hồ sơ bệnh án nào</Text>
+                        <Text style={styles.emptyTitle}>
+                          {filterPatientId || creatorFilter !== 'all'
+                            ? 'Không tìm thấy hồ sơ nào'
+                            : 'Chưa có hồ sơ bệnh án nào'}
+                        </Text>
                         <Text style={styles.emptySubtitle}>
-                          {filterPatientId
-                            ? `Không tìm thấy hồ sơ nào khớp với "${filterPatientId}"`
-                            : 'Nhấn "+ Thêm hồ sơ" để đăng ký hồ sơ sản phụ mới vào nghiên cứu.'}
+                          {filterPatientId || creatorFilter !== 'all'
+                            ? 'Thử thay đổi từ khóa tìm kiếm hoặc bỏ lọc người tạo.'
+                            : 'Nhấn "+ Thêm hồ sơ" để đăng ký hồ sơ sản phụ mới thuộc quyền quản lý của bạn.'}
                         </Text>
                         <TouchableOpacity
                           style={[styles.actionBtnPrimary, { marginTop: 14 }]}
                           onPress={handleAddNewPatient}
                         >
                           <Ionicons name="add" size={18} color="#FFFFFF" />
-                          <Text style={styles.actionBtnPrimaryText}>Thêm hồ sơ đầu tiên</Text>
+                          <Text style={styles.actionBtnPrimaryText}>Thêm hồ sơ mới</Text>
                         </TouchableOpacity>
                       </View>
                     ) : (
@@ -891,11 +1106,35 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                   <Text style={styles.patientIdText}>{patient.study_id}</Text>
                                 </View>
 
-                                <View style={styles.assessmentCountTag}>
-                                  <Ionicons name="pulse" size={13} color="#059669" />
-                                  <Text style={styles.assessmentCountText}>
-                                    {patientAssessmentsCount} lần đo eVAS
-                                  </Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  {/* Creator Badge */}
+                                  {isAdmin ? (
+                                    patient.created_by === currentUser?.id ? (
+                                      <View style={styles.myCreatorBadge}>
+                                        <Ionicons name="person" size={11} color="#059669" />
+                                        <Text style={styles.myCreatorBadgeText}>Tôi tạo</Text>
+                                      </View>
+                                    ) : (
+                                      <View style={styles.otherCreatorBadge}>
+                                        <Ionicons name="person-outline" size={11} color="#4338CA" />
+                                        <Text style={styles.otherCreatorBadgeText}>
+                                          {patient.created_by_name || 'NCV'}
+                                        </Text>
+                                      </View>
+                                    )
+                                  ) : (
+                                    <View style={styles.myCreatorBadge}>
+                                      <Ionicons name="lock-closed" size={11} color="#059669" />
+                                      <Text style={styles.myCreatorBadgeText}>Của tôi</Text>
+                                    </View>
+                                  )}
+
+                                  <View style={styles.assessmentCountTag}>
+                                    <Ionicons name="pulse" size={13} color="#059669" />
+                                    <Text style={styles.assessmentCountText}>
+                                      {patientAssessmentsCount} lần đo eVAS
+                                    </Text>
+                                  </View>
                                 </View>
                               </View>
 
@@ -944,6 +1183,14 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                       : '---'}
                                   </Text>
                                 </View>
+
+                                <View style={styles.patientDetailItemFull}>
+                                  <Text style={styles.detailLabel}>Người tạo & Quản lý:</Text>
+                                  <Text style={[styles.detailValue, { color: '#0F172A', fontWeight: '700' }]}>
+                                    {patient.created_by_name || 'PGS. TS. Chủ nhiệm Đề tài'}
+                                    {patient.created_by === currentUser?.id ? ' (Chính bạn)' : ''}
+                                  </Text>
+                                </View>
                               </View>
 
                               {/* Action Footer */}
@@ -967,13 +1214,25 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                   </View>
                                 )}
 
-                                <TouchableOpacity
-                                  style={styles.patientActionEditBtn}
-                                  onPress={() => handleEditPatient(patient)}
-                                >
-                                  <Ionicons name="create-outline" size={15} color="#475569" />
-                                  <Text style={styles.patientActionEditText}>Sửa hồ sơ</Text>
-                                </TouchableOpacity>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                  <TouchableOpacity
+                                    style={styles.patientActionEditBtn}
+                                    onPress={() => handleEditPatient(patient)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Ionicons name="create-outline" size={15} color="#475569" />
+                                    <Text style={styles.patientActionEditText}>Sửa</Text>
+                                  </TouchableOpacity>
+
+                                  <TouchableOpacity
+                                    style={styles.patientActionDeleteBtn}
+                                    onPress={() => handleDeletePatient(patient)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                                    <Text style={styles.patientActionDeleteText}>Xóa</Text>
+                                  </TouchableOpacity>
+                                </View>
                               </View>
                             </View>
                           );
@@ -996,21 +1255,48 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     </View>
 
                     <Text style={styles.sectionHeader}>
-                      {newStudyId && patients.some((p) => p.study_id === newStudyId)
-                        ? `Cập nhật hồ sơ: ${newStudyId}`
+                      {editingPatient
+                        ? `Cập nhật hồ sơ: ${editingPatient.study_id}`
                         : 'Thêm hồ sơ sản phụ mới (Hồ sơ bệnh án)'}
                     </Text>
                     <Text style={styles.sectionNote}>
                       Theo PRD Mục B: Dữ liệu chuyên sâu do NCV thu thập riêng để đối chiếu với điểm eVAS.
                     </Text>
 
+                    {/* Creator Permission Info Box */}
+                    <View style={styles.creatorFormInfoBox}>
+                      <Ionicons
+                        name={editingPatient ? 'shield-checkmark' : 'person-add'}
+                        size={20}
+                        color="#0284C7"
+                      />
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={styles.creatorFormInfoTitle}>
+                          {editingPatient ? 'Thông tin phân quyền hồ sơ:' : 'Phân quyền người tạo:'}
+                        </Text>
+                        <Text style={styles.creatorFormInfoText}>
+                          {editingPatient
+                            ? `Hồ sơ này do "${editingPatient.created_by_name || 'Hệ thống'}" tạo. Chỉ người tạo và Quản trị viên (Admin) mới có quyền xem & chỉnh sửa.`
+                            : `Hồ sơ sẽ được liên kết trực tiếp với tài khoản của bạn: "${currentUser?.name}" (${currentUser?.role === 'admin' ? 'Quản trị viên' : 'Nghiên cứu viên'}). Các NCV khác sẽ không thể xem hồ sơ này.`}
+                        </Text>
+                      </View>
+                    </View>
+
                     <View style={styles.formGroup}>
-                      <Text style={styles.label}>Mã nghiên cứu (study_id) *</Text>
+                      <Text style={styles.label}>
+                        Mã nghiên cứu (study_id) *{' '}
+                        {editingPatient && (
+                          <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: 'normal' }}>
+                            (Không thể thay đổi mã khi sửa)
+                          </Text>
+                        )}
+                      </Text>
                       <TextInput
-                        style={styles.formInput}
+                        style={[styles.formInput, editingPatient && styles.formInputDisabled]}
                         value={newStudyId}
                         onChangeText={(t) => setNewStudyId(t.toUpperCase())}
                         placeholder="VD: CS001"
+                        editable={!editingPatient}
                       />
                     </View>
 
@@ -1071,7 +1357,10 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     <View style={styles.formActionsRow}>
                       <TouchableOpacity
                         style={styles.formCancelBtn}
-                        onPress={() => setPatientViewMode('list')}
+                        onPress={() => {
+                          setEditingPatient(null);
+                          setPatientViewMode('list');
+                        }}
                       >
                         <Text style={styles.formCancelBtnText}>Hủy</Text>
                       </TouchableOpacity>
@@ -1082,7 +1371,9 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                         activeOpacity={0.85}
                       >
                         <Ionicons name="save-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.submitPatientBtnText}>Lưu hồ sơ</Text>
+                        <Text style={styles.submitPatientBtnText}>
+                          {editingPatient ? 'Cập nhật hồ sơ' : 'Lưu hồ sơ'}
+                        </Text>
                       </TouchableOpacity>
                     </View>
                   </ScrollView>
@@ -2271,6 +2562,156 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#475569',
+  },
+  patientActionDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    gap: 4,
+  },
+  patientActionDeleteText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
+  },
+  // Permission Banners & Badges
+  permissionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+  },
+  permissionBannerAdmin: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  permissionBannerNCV: {
+    backgroundColor: '#F0F9FF',
+    borderColor: '#BAE6FD',
+  },
+  permissionBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  permissionTextAdmin: {
+    color: '#92400E',
+  },
+  permissionTextNCV: {
+    color: '#0369A1',
+  },
+  permissionBannerSub: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  permissionSubAdmin: {
+    color: '#B45309',
+  },
+  permissionSubNCV: {
+    color: '#0284C7',
+  },
+  // Creator Filter (Admin)
+  creatorFilterContainer: {
+    marginBottom: 12,
+  },
+  creatorFilterLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+    marginBottom: 6,
+  },
+  creatorFilterScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  creatorPill: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  creatorPillActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0284C7',
+  },
+  creatorPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  creatorPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  // Creator Badges on Cards
+  myCreatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    gap: 4,
+  },
+  myCreatorBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  otherCreatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EEF2FF',
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    gap: 4,
+  },
+  otherCreatorBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4338CA',
+  },
+  // Creator Form Info Box
+  creatorFormInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  creatorFormInfoTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginBottom: 2,
+  },
+  creatorFormInfoText: {
+    fontSize: 12,
+    color: '#0284C7',
+    lineHeight: 16,
+  },
+  formInputDisabled: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#E2E8F0',
+    color: '#64748B',
   },
   formBackRow: {
     marginBottom: 14,

@@ -19,6 +19,8 @@ export interface Patient {
   paper_vas_score?: number | null; // Điểm VAS giấy đối chiếu
   drug_administration_time?: string | null;
   created_at: string;
+  created_by?: string; // ID người tạo hồ sơ (vd: 'ncv-01' hoặc 'admin-01')
+  created_by_name?: string; // Tên hiển thị người tạo hồ sơ
   notes?: string;
 }
 

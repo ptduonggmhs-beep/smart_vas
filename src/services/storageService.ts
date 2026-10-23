@@ -85,7 +85,32 @@ export const StorageService = {
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.PATIENTS);
       if (data) {
-        return JSON.parse(data);
+        const parsed: Patient[] = JSON.parse(data);
+        // Migration: Gán người tạo cho các bản ghi cũ chưa có thông tin created_by
+        let hasChanges = false;
+        const migrated = parsed.map((p) => {
+          if (!p.created_by) {
+            hasChanges = true;
+            if (p.study_id.toUpperCase() === 'CS002') {
+              return {
+                ...p,
+                created_by: 'ncv-01',
+                created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
+              };
+            }
+            return {
+              ...p,
+              created_by: 'admin-01',
+              created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
+            };
+          }
+          return p;
+        });
+
+        if (hasChanges) {
+          await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(migrated));
+        }
+        return migrated;
       }
       // Dữ liệu ban đầu mặc định đã đăng ký trong đề cương
       const initialList: Patient[] = [
@@ -96,6 +121,8 @@ export const StorageService = {
           anesthesia_method: 'Tê tủy sống',
           analgesia_drugs: 'Morphin tủy sống + Paracetamol',
           created_at: new Date().toISOString(),
+          created_by: 'admin-01',
+          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
         },
         {
           study_id: 'CS002',
@@ -104,6 +131,8 @@ export const StorageService = {
           anesthesia_method: 'Tê tủy sống',
           analgesia_drugs: 'Sufentanil + Paracetamol',
           created_at: new Date().toISOString(),
+          created_by: 'ncv-01',
+          created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
         },
         {
           study_id: 'CS003',
@@ -112,6 +141,8 @@ export const StorageService = {
           anesthesia_method: 'Mê nội khí quản',
           analgesia_drugs: 'PCA Fentanyl',
           created_at: new Date().toISOString(),
+          created_by: 'admin-01',
+          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
         },
       ];
       await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(initialList));
@@ -134,6 +165,24 @@ export const StorageService = {
       await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(list));
     } catch (e) {
       console.error('Error saving local patient:', e);
+    }
+  },
+
+  async saveAllLocalPatients(patients: Patient[]): Promise<void> {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(patients));
+    } catch (e) {
+      console.error('Error saving all local patients:', e);
+    }
+  },
+
+  async deleteLocalPatient(studyId: string): Promise<void> {
+    try {
+      const list = await this.getLocalPatients();
+      const filtered = list.filter(p => p.study_id.toUpperCase() !== studyId.trim().toUpperCase());
+      await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(filtered));
+    } catch (e) {
+      console.error('Error deleting local patient:', e);
     }
   },
 

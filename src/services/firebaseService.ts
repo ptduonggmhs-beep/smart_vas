@@ -1,6 +1,6 @@
 import { doc, setDoc, getDoc, collection, getDocs, query, orderBy, serverTimestamp, deleteDoc } from 'firebase/firestore';
 import { db } from '../config/firebase';
-import { Assessment, Patient, ResearcherAccount, SaveStatus } from '../types';
+import { Assessment, Patient, ResearcherAccount, SaveStatus, AppUser } from '../types';
 import { StorageService, INITIAL_SEED_RESEARCHERS } from './storageService';
 
 const PATIENTS_COLLECTION = 'patients';
@@ -11,30 +11,66 @@ const RESEARCHERS_COLLECTION = 'researchers';
 export const FirebaseService = {
   /**
    * Lưu hoặc cập nhật hồ sơ sản phụ (Table Patients)
+   * Phân quyền: Ai tạo bệnh nhân nào thì quản lý bệnh nhân đó, chỉ người tạo hoặc admin mới được sửa
    */
-  async savePatient(patient: Patient): Promise<{ success: boolean; error?: string }> {
-    // 1. Luôn lưu vào Local Cache trước
-    await StorageService.saveLocalPatient(patient);
+  async savePatient(
+    patient: Patient,
+    currentUser?: AppUser | null
+  ): Promise<{ success: boolean; error?: string }> {
+    const normalizedStudyId = patient.study_id.trim().toUpperCase();
 
-    // 2. Thử đồng bộ lên Firestore
+    // 1. Kiểm tra quyền nếu hồ sơ đã tồn tại
+    const existing = await this.getPatient(normalizedStudyId);
+    if (existing && currentUser) {
+      const isAdmin = currentUser.role === 'admin';
+      const isCreator = existing.created_by === currentUser.id;
+      if (!isAdmin && existing.created_by && !isCreator) {
+        return {
+          success: false,
+          error: `Bạn không có quyền chỉnh sửa hồ sơ "${normalizedStudyId}" vì hồ sơ được tạo bởi nghiên cứu viên khác (${existing.created_by_name || 'NCV khác'}).`,
+        };
+      }
+    }
+
+    // 2. Xác định người tạo: nếu là tạo mới -> gán currentUser, nếu là sửa -> giữ nguyên người tạo ban đầu
+    const createdBy = patient.created_by || existing?.created_by || currentUser?.id || 'admin-01';
+    const createdByName =
+      patient.created_by_name ||
+      existing?.created_by_name ||
+      currentUser?.name ||
+      'PGS. TS. Chủ nhiệm Đề tài';
+
+    const patientToSave: Patient = {
+      ...patient,
+      study_id: normalizedStudyId,
+      created_by: createdBy,
+      created_by_name: createdByName,
+    };
+
+    // 3. Luôn lưu vào Local Cache trước
+    await StorageService.saveLocalPatient(patientToSave);
+
+    // 4. Thử đồng bộ lên Firestore
     if (!db) {
       return { success: false, error: 'Chưa khởi tạo kết nối Firestore' };
     }
 
     try {
-      const patientRef = doc(db, PATIENTS_COLLECTION, patient.study_id.toUpperCase());
+      const patientRef = doc(db, PATIENTS_COLLECTION, patientToSave.study_id);
       await setDoc(
         patientRef,
         {
-          study_id: patient.study_id.toUpperCase(),
-          age: patient.age ?? null,
-          para: patient.para ?? null,
-          anesthesia_method: patient.anesthesia_method ?? null,
-          analgesia_drugs: patient.analgesia_drugs ?? null,
-          paper_vas_score: patient.paper_vas_score ?? null,
-          drug_administration_time: patient.drug_administration_time ?? null,
-          created_at: patient.created_at,
-          notes: patient.notes ?? null,
+          study_id: patientToSave.study_id,
+          age: patientToSave.age ?? null,
+          para: patientToSave.para ?? null,
+          anesthesia_method: patientToSave.anesthesia_method ?? null,
+          analgesia_drugs: patientToSave.analgesia_drugs ?? null,
+          paper_vas_score: patientToSave.paper_vas_score ?? null,
+          drug_administration_time: patientToSave.drug_administration_time ?? null,
+          created_at: patientToSave.created_at,
+          created_by: patientToSave.created_by,
+          created_by_name: patientToSave.created_by_name,
+          notes: patientToSave.notes ?? null,
           synced_at: serverTimestamp(),
         },
         { merge: true }
@@ -152,10 +188,15 @@ export const FirebaseService = {
   },
 
   /**
-   * Lấy danh sách tất cả hồ sơ bệnh nhân (từ Firestore kết hợp Local cache)
+   * Lấy danh sách hồ sơ bệnh nhân (từ Firestore kết hợp Local cache)
+   * Phân quyền:
+   * - Nếu là Admin hoặc chưa truyền user: Xem được toàn bộ hồ sơ
+   * - Nếu là NCV: Chỉ xem được hồ sơ do chính mình tạo (patient.created_by === currentUser.id)
    */
-  async getAllPatients(): Promise<Patient[]> {
+  async getAllPatients(currentUser?: AppUser | null): Promise<Patient[]> {
     const localPatients = await StorageService.getLocalPatients();
+    let allPatients = localPatients;
+
     if (db) {
       try {
         const q = query(collection(db, PATIENTS_COLLECTION));
@@ -172,13 +213,84 @@ export const FirebaseService = {
           const mergedMap = new Map<string, Patient>();
           localPatients.forEach((p) => mergedMap.set(p.study_id.toUpperCase(), p));
           remoteMap.forEach((v, k) => mergedMap.set(k, v));
-          return Array.from(mergedMap.values());
+          allPatients = Array.from(mergedMap.values());
         }
       } catch (err: any) {
         console.warn('Không thể load Patients từ Firestore, chuyển sang đọc bộ nhớ máy:', err?.message);
       }
     }
-    return localPatients;
+
+    // Đảm bảo mọi bệnh nhân đều có thông tin người tạo (fallback)
+    const normalizedList = allPatients.map((p) => {
+      if (!p.created_by) {
+        if (p.study_id.toUpperCase() === 'CS002') {
+          return {
+            ...p,
+            created_by: 'ncv-01',
+            created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
+          };
+        }
+        return {
+          ...p,
+          created_by: 'admin-01',
+          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
+        };
+      }
+      return p;
+    });
+
+    // Phân quyền theo người dùng
+    if (currentUser) {
+      if (currentUser.role === 'admin') {
+        return normalizedList;
+      }
+      // NCV: Chỉ thấy bệnh nhân do chính mình tạo
+      return normalizedList.filter((p) => p.created_by === currentUser.id);
+    }
+
+    return normalizedList;
+  },
+
+  /**
+   * Xóa hồ sơ bệnh nhân khỏi hệ thống
+   * Phân quyền: Chỉ người tạo hoặc Quản trị viên mới có quyền xóa
+   */
+  async deletePatient(
+    studyId: string,
+    currentUser?: AppUser | null
+  ): Promise<{ success: boolean; error?: string }> {
+    const normalizedId = studyId.trim().toUpperCase();
+    const existing = await this.getPatient(normalizedId);
+    if (!existing) {
+      return { success: false, error: 'Hồ sơ bệnh nhân không tồn tại.' };
+    }
+
+    if (currentUser) {
+      const isAdmin = currentUser.role === 'admin';
+      const isCreator = existing.created_by === currentUser.id;
+      if (!isAdmin && existing.created_by && !isCreator) {
+        return {
+          success: false,
+          error: 'Bạn không có quyền xóa hồ sơ này. Chỉ người tạo hoặc Quản trị viên mới được phép xóa.',
+        };
+      }
+    }
+
+    // 1. Xóa trong bộ nhớ máy
+    await StorageService.deleteLocalPatient(normalizedId);
+
+    // 2. Xóa trên Firestore
+    if (db) {
+      try {
+        const ref = doc(db, PATIENTS_COLLECTION, normalizedId);
+        await deleteDoc(ref);
+      } catch (err: any) {
+        console.warn('Lỗi xóa Patient trên Firestore (đã xóa local):', err?.message);
+        return { success: false, error: err?.message };
+      }
+    }
+
+    return { success: true };
   },
 
   /**
