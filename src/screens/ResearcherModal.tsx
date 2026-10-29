@@ -14,9 +14,31 @@ import {
   KeyboardAvoidingView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Assessment, Patient, AppUser, ResearcherAccount, UserRole } from '../types';
+import {
+  Assessment,
+  Patient,
+  AppUser,
+  ResearcherAccount,
+  UserRole,
+  ClinicalConfig,
+  ClinicalActivityItem,
+  ClinicalSurgeryGroupItem,
+  ClinicalCareLocationItem,
+} from '../types';
 import { FirebaseService } from '../services/firebaseService';
 import { AuthService } from '../services/authService';
+import { StorageService } from '../services/storageService';
+import { CLINICAL_DEFINITIONS, REASON_NOT_COMPLETED_LABELS, EXECUTION_STATUS_LABELS } from '../config/clinicalConfig';
+import {
+  getCalibratedVASHeight,
+  getStoredCalibrationFactor,
+  saveCalibrationFactor,
+  resetCalibrationFactor,
+  getDisplayDiagnostics,
+  VAS_CLINICAL_LENGTH_MM,
+  REFERENCE_CARD_LENGTH_MM,
+  mmToPixels,
+} from '../utils/physicalScale';
 
 interface ResearcherModalProps {
   visible: boolean;
@@ -31,16 +53,36 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   currentUser,
   onUserChanged,
 }) => {
-  const [activeTab, setActiveTab] = useState<'assessments' | 'patients' | 'accounts'>('assessments');
+  const [activeTab, setActiveTab] = useState<'assessments' | 'patients' | 'accounts' | 'calibration' | 'clinical_config'>('assessments');
   const [assessments, setAssessments] = useState<Assessment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [researchers, setResearchers] = useState<ResearcherAccount[]>([]);
+  const [calibrationFactor, setCalibrationFactor] = useState<number>(1.0);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const [filterStudyId, setFilterStudyId] = useState<string>('');
+  const [contextFilter, setContextFilter] = useState<'all' | 'nghi' | 'hoat_dong'>('all');
+  const [filterActivityName, setFilterActivityName] = useState<string>('');
   const [filterPatientId, setFilterPatientId] = useState<string>('');
   const [filterResearcherText, setFilterResearcherText] = useState<string>('');
   const [patientViewMode, setPatientViewMode] = useState<'list' | 'form'>('list');
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [creatorFilter, setCreatorFilter] = useState<string>('all'); // 'all' | 'my' | researcherId
+  const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
+  const [expandedPatientIds, setExpandedPatientIds] = useState<{ [studyId: string]: boolean }>({});
+
+  const togglePatientExpand = (studyId: string) => {
+    setExpandedPatientIds((prev) => ({
+      ...prev,
+      [studyId]: !prev[studyId],
+    }));
+  };
+
+  // Cấu hình danh mục lâm sàng
+  const [clinicalConfig, setClinicalConfig] = useState<ClinicalConfig | null>(null);
+  const [newActivityInput, setNewActivityInput] = useState<string>('');
+  const [newSurgeryInput, setNewSurgeryInput] = useState<string>('');
+  const [newLocationInput, setNewLocationInput] = useState<string>('');
 
   // Authentication State
   const [loginMethod, setLoginMethod] = useState<'pin' | 'email'>('pin');
@@ -82,22 +124,34 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     if (!isAuthorized) return;
     setLoading(true);
     try {
+      const cfg = await StorageService.getClinicalConfig();
+      setClinicalConfig(cfg);
+
       if (isAdmin) {
+        // Admin: Xem được tất cả hồ sơ bệnh nhân, tất cả đánh giá và tất cả tài khoản NCV
         const [allAssessments, allPatients, allResearchers] = await Promise.all([
           FirebaseService.getAllAssessments(),
-          FirebaseService.getAllPatients(),
+          FirebaseService.getAllPatients(currentUser),
           AuthService.getAllResearchers(),
         ]);
         setAssessments(allAssessments);
         setPatients(allPatients);
         setResearchers(allResearchers);
       } else {
-        const [allAssessments, allPatients] = await Promise.all([
+        // NCV: Chỉ xem được hồ sơ bệnh nhân do chính mình tạo; người khác không thể xem
+        const [allAssessments, myPatients] = await Promise.all([
           FirebaseService.getAllAssessments(),
-          FirebaseService.getAllPatients(),
+          FirebaseService.getAllPatients(currentUser),
         ]);
-        setAssessments(allAssessments);
-        setPatients(allPatients);
+        const scopedPatients = myPatients.filter((p) => p.created_by === currentUser?.id);
+        const scopedPatientIds = new Set(scopedPatients.map((p) => p.study_id.toUpperCase()));
+        // Điểm đánh giá eVAS cũng chỉ giới hạn ở các bệnh nhân do NCV này quản lý
+        const scopedAssessments = allAssessments.filter((a) =>
+          scopedPatientIds.has(a.study_id.toUpperCase())
+        );
+
+        setPatients(scopedPatients);
+        setAssessments(scopedAssessments);
         setResearchers([]);
       }
     } catch (e) {
@@ -113,6 +167,12 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     }
     if (!isAdmin && activeTab === 'accounts') {
       setActiveTab('assessments');
+    }
+    if (visible) {
+      getStoredCalibrationFactor().then((f) => {
+        setCalibrationFactor(f);
+        setDiagnostics(getDisplayDiagnostics(f));
+      });
     }
     setAuthError('');
   }, [visible, isAuthorized, isAdmin]);
@@ -185,7 +245,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
       Alert.alert('Chưa có dữ liệu', 'Không có bản ghi đánh giá nào để xuất CSV.');
       return;
     }
-    const csvData = FirebaseService.exportToCSV(assessments);
+    const csvData = FirebaseService.exportToCSV(assessments, patients);
     try {
       if (Platform.OS === 'web') {
         const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
@@ -208,6 +268,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   };
 
   const handleAddNewPatient = () => {
+    setEditingPatient(null);
     setNewStudyId('');
     setNewAge('');
     setNewPara('');
@@ -218,6 +279,15 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
   };
 
   const handleEditPatient = (p: Patient) => {
+    // Phân quyền: Chỉ người tạo hoặc Admin mới có quyền sửa
+    if (!isAdmin && p.created_by && p.created_by !== currentUser?.id) {
+      Alert.alert(
+        'Không có quyền truy cập',
+        'Hồ sơ này do một Nghiên cứu viên khác tạo. Chỉ người tạo hoặc Quản trị viên (Admin) mới có quyền chỉnh sửa.'
+      );
+      return;
+    }
+    setEditingPatient(p);
     setNewStudyId(p.study_id);
     setNewAge(p.age !== null && p.age !== undefined ? String(p.age) : '');
     setNewPara(p.para || '');
@@ -227,32 +297,95 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     setPatientViewMode('form');
   };
 
+  const handleDeletePatient = (patient: Patient) => {
+    // Phân quyền: Chỉ người tạo hoặc Admin mới có quyền xóa
+    if (!isAdmin && patient.created_by && patient.created_by !== currentUser?.id) {
+      Alert.alert(
+        'Không có quyền xóa',
+        'Hồ sơ này do một Nghiên cứu viên khác tạo. Chỉ người tạo hoặc Quản trị viên (Admin) mới có quyền xóa.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Xác nhận xóa hồ sơ',
+      `Bạn có chắc chắn muốn xóa hồ sơ sản phụ "${patient.study_id}" không?\n\nNgười tạo: ${patient.created_by_name || 'Hệ thống'}`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa hồ sơ',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await FirebaseService.deletePatient(patient.study_id, currentUser);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã xóa', `Đã xóa hồ sơ ${patient.study_id} thành công.`);
+              loadData();
+            } else {
+              Alert.alert('Lỗi xóa hồ sơ', res.error || 'Không thể xóa hồ sơ.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleSavePatient = async () => {
-    if (!newStudyId.trim()) {
+    const trimmedStudyId = newStudyId.trim().toUpperCase();
+    if (!trimmedStudyId) {
       Alert.alert('Lỗi', 'Vui lòng nhập Mã nghiên cứu (study_id).');
       return;
     }
+
+    // Nếu tạo mới: kiểm tra trùng mã trên toàn hệ thống
+    if (!editingPatient) {
+      const existing = await FirebaseService.getPatient(trimmedStudyId);
+      if (existing) {
+        Alert.alert(
+          'Mã hồ sơ đã tồn tại',
+          `Mã "${trimmedStudyId}" đã tồn tại trong hệ thống (tạo bởi: ${existing.created_by_name || 'NCV khác'}). Vui lòng chọn mã khác.`
+        );
+        return;
+      }
+    }
+
+    // Nếu đang sửa: kiểm tra quyền chỉnh sửa
+    if (editingPatient && !isAdmin && editingPatient.created_by && editingPatient.created_by !== currentUser?.id) {
+      Alert.alert('Từ chối', 'Bạn không có quyền chỉnh sửa hồ sơ do người khác tạo.');
+      return;
+    }
+
     const patientData: Patient = {
-      study_id: newStudyId.trim().toUpperCase(),
+      study_id: trimmedStudyId,
       age: newAge ? parseInt(newAge) : null,
       para: newPara || null,
       anesthesia_method: newAnesthesia || null,
       analgesia_drugs: newDrugs || null,
       paper_vas_score: newPaperVas ? parseFloat(newPaperVas) : null,
-      created_at: new Date().toISOString(),
+      created_at: editingPatient ? editingPatient.created_at : new Date().toISOString(),
+      created_by: editingPatient ? editingPatient.created_by : (currentUser?.id || 'admin-01'),
+      created_by_name: editingPatient ? editingPatient.created_by_name : (currentUser?.name || 'PGS. TS. Chủ nhiệm Đề tài'),
     };
 
     setLoading(true);
-    const res = await FirebaseService.savePatient(patientData);
+    const res = await FirebaseService.savePatient(patientData, currentUser);
     setLoading(false);
 
     if (res.success) {
-      Alert.alert('Thành công', `Đã lưu hồ sơ sản phụ ${patientData.study_id}`);
+      Alert.alert(
+        'Thành công',
+        editingPatient
+          ? `Đã cập nhật hồ sơ sản phụ ${patientData.study_id}`
+          : `Đã lưu hồ sơ sản phụ ${patientData.study_id}\nNgười tạo & quản lý: ${patientData.created_by_name}`
+      );
+      setEditingPatient(null);
       setNewStudyId('');
       setPatientViewMode('list');
       loadData();
     } else {
-      Alert.alert('Đã lưu cục bộ', `Đã lưu vào bộ nhớ máy (${res.error})`);
+      Alert.alert('Thông báo', res.error || 'Lỗi khi lưu hồ sơ');
+      setEditingPatient(null);
       setPatientViewMode('list');
       loadData();
     }
@@ -461,22 +594,358 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
     );
   });
 
-  const filteredAssessments = filterStudyId.trim()
-    ? assessments.filter((a) => a.study_id.toUpperCase().includes(filterStudyId.trim().toUpperCase()))
-    : assessments;
+  const filteredAssessments = assessments.filter((a) => {
+    // 1. Lọc theo Study ID
+    if (filterStudyId.trim()) {
+      if (!a.study_id.toUpperCase().includes(filterStudyId.trim().toUpperCase())) {
+        return false;
+      }
+    }
+    // 2. Lọc theo bối cảnh
+    if (contextFilter === 'nghi' && a.pain_context !== 'nghi') {
+      return false;
+    }
+    if (contextFilter === 'hoat_dong' && a.pain_context === 'nghi') {
+      return false;
+    }
+    // 3. Lọc theo tên hoạt động
+    if (filterActivityName.trim()) {
+      if (!a.activity_name || !a.activity_name.toLowerCase().includes(filterActivityName.trim().toLowerCase())) {
+        return false;
+      }
+    }
+    return true;
+  });
 
-  const filteredPatients = filterPatientId.trim()
-    ? patients.filter((p) => p.study_id.toUpperCase().includes(filterPatientId.trim().toUpperCase()))
-    : patients;
+  // Gom nhóm kết quả đánh giá theo từng bệnh nhân (study_id)
+  const groupedAssessments = React.useMemo(() => {
+    const map = new Map<string, Assessment[]>();
+    for (const a of filteredAssessments) {
+      const key = a.study_id.toUpperCase();
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key)!.push(a);
+    }
+
+    const groups: {
+      study_id: string;
+      items: Assessment[];
+      latestTimestamp: string;
+      completedCount: number;
+    }[] = [];
+
+    map.forEach((items, study_id) => {
+      items.sort((x, y) => new Date(y.submit_timestamp).getTime() - new Date(x.submit_timestamp).getTime());
+      groups.push({
+        study_id,
+        items,
+        latestTimestamp: items[0]?.submit_timestamp || '',
+        completedCount: items.filter((i) => i.completion_status === 'completed').length,
+      });
+    });
+
+    groups.sort((a, b) => new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime());
+    return groups;
+  }, [filteredAssessments]);
+
+
+  // Xử lý thêm hoạt động mới vào cấu hình
+  const handleAddClinicalActivity = async () => {
+    if (!newActivityInput.trim()) {
+      Alert.alert('Chưa nhập tên', 'Vui lòng nhập tên hoạt động cần thêm.');
+      return;
+    }
+    const current = clinicalConfig || (await StorageService.getClinicalConfig());
+    const newItem: ClinicalActivityItem = {
+      id: `act_${Date.now()}`,
+      group_id: 'grp_6',
+      group_name: 'Nhóm 6. HOẠT ĐỘNG ĐẶC THÙ THEO LOẠI PHẪU THUẬT',
+      name: newActivityInput.trim(),
+      order: current.activities.length + 1,
+      is_active: true,
+    };
+    const updated: ClinicalConfig = {
+      ...current,
+      activities: [...current.activities, newItem],
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+    setNewActivityInput('');
+    Alert.alert('Đã thêm', `Đã bổ sung hoạt động "${newItem.name}" vào danh mục cấu hình.`);
+  };
+
+  // Bật / tắt hoạt động
+  const handleToggleClinicalActivity = async (item: ClinicalActivityItem) => {
+    if (!clinicalConfig) return;
+    const updatedList = clinicalConfig.activities.map((a) =>
+      a.id === item.id ? { ...a, is_active: !a.is_active } : a
+    );
+    const updated: ClinicalConfig = {
+      ...clinicalConfig,
+      activities: updatedList,
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+  };
+
+  // Xóa hoạt động khỏi danh mục
+  const handleDeleteClinicalActivity = (item: ClinicalActivityItem) => {
+    Alert.alert(
+      'Xác nhận xóa hoạt động',
+      `Bạn có chắc chắn muốn xóa hoạt động "${item.name}" khỏi danh mục cấu hình?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            if (!clinicalConfig) return;
+            const updatedList = clinicalConfig.activities.filter((a) => a.id !== item.id);
+            const updated: ClinicalConfig = {
+              ...clinicalConfig,
+              activities: updatedList,
+            };
+            await StorageService.saveClinicalConfig(updated);
+            setClinicalConfig(updated);
+          },
+        },
+      ]
+    );
+  };
+
+  // Thêm nhóm phẫu thuật mới
+  const handleAddSurgeryGroup = async () => {
+    if (!newSurgeryInput.trim()) {
+      Alert.alert('Chưa nhập tên', 'Vui lòng nhập tên nhóm / vị trí phẫu thuật cần thêm.');
+      return;
+    }
+    const current = clinicalConfig || (await StorageService.getClinicalConfig());
+    const newItem: ClinicalSurgeryGroupItem = {
+      id: `surg_${Date.now()}`,
+      name: newSurgeryInput.trim(),
+      order: (current.surgery_groups || []).length + 1,
+      is_active: true,
+    };
+    const updated: ClinicalConfig = {
+      ...current,
+      surgery_groups: [...(current.surgery_groups || []), newItem],
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+    setNewSurgeryInput('');
+    Alert.alert('Đã thêm', `Đã bổ sung nhóm phẫu thuật "${newItem.name}" vào danh mục.`);
+  };
+
+  const handleToggleSurgeryGroup = async (item: ClinicalSurgeryGroupItem) => {
+    if (!clinicalConfig) return;
+    const updatedList = (clinicalConfig.surgery_groups || []).map((s) =>
+      s.id === item.id ? { ...s, is_active: !s.is_active } : s
+    );
+    const updated: ClinicalConfig = {
+      ...clinicalConfig,
+      surgery_groups: updatedList,
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+  };
+
+  const handleDeleteSurgeryGroup = (item: ClinicalSurgeryGroupItem) => {
+    Alert.alert(
+      'Xóa nhóm phẫu thuật',
+      `Bạn có chắc chắn muốn xóa danh mục "${item.name}"?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            if (!clinicalConfig) return;
+            const updatedList = (clinicalConfig.surgery_groups || []).filter((s) => s.id !== item.id);
+            const updated: ClinicalConfig = {
+              ...clinicalConfig,
+              surgery_groups: updatedList,
+            };
+            await StorageService.saveClinicalConfig(updated);
+            setClinicalConfig(updated);
+          },
+        },
+      ]
+    );
+  };
+
+  // Thêm khu vực chăm sóc mới
+  const handleAddCareLocation = async () => {
+    if (!newLocationInput.trim()) {
+      Alert.alert('Chưa nhập tên', 'Vui lòng nhập tên khu vực chăm sóc cần thêm.');
+      return;
+    }
+    const current = clinicalConfig || (await StorageService.getClinicalConfig());
+    const newItem: ClinicalCareLocationItem = {
+      id: `loc_${Date.now()}`,
+      name: newLocationInput.trim(),
+      order: (current.care_locations || []).length + 1,
+      is_active: true,
+    };
+    const updated: ClinicalConfig = {
+      ...current,
+      care_locations: [...(current.care_locations || []), newItem],
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+    setNewLocationInput('');
+    Alert.alert('Đã thêm', `Đã bổ sung khu vực chăm sóc "${newItem.name}" vào danh mục.`);
+  };
+
+  const handleToggleCareLocation = async (item: ClinicalCareLocationItem) => {
+    if (!clinicalConfig) return;
+    const updatedList = (clinicalConfig.care_locations || []).map((l) =>
+      l.id === item.id ? { ...l, is_active: !l.is_active } : l
+    );
+    const updated: ClinicalConfig = {
+      ...clinicalConfig,
+      care_locations: updatedList,
+    };
+    await StorageService.saveClinicalConfig(updated);
+    setClinicalConfig(updated);
+  };
+
+  const handleDeleteCareLocation = (item: ClinicalCareLocationItem) => {
+    Alert.alert(
+      'Xóa khu vực chăm sóc',
+      `Bạn có chắc chắn muốn xóa danh mục "${item.name}"?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            if (!clinicalConfig) return;
+            const updatedList = (clinicalConfig.care_locations || []).filter((l) => l.id !== item.id);
+            const updated: ClinicalConfig = {
+              ...clinicalConfig,
+              care_locations: updatedList,
+            };
+            await StorageService.saveClinicalConfig(updated);
+            setClinicalConfig(updated);
+          },
+        },
+      ]
+    );
+  };
+
+  // Xóa tất cả các lần đánh giá của một bệnh nhân
+  const handleDeletePatientAssessments = (studyId: string, count: number) => {
+    Alert.alert(
+      'Xác nhận xóa kết quả bệnh nhân',
+      `Bạn có chắc chắn muốn xóa toàn bộ ${count} lần đánh giá của bệnh nhân "${studyId}"?\n\nDữ liệu sẽ bị xóa hoàn toàn khỏi thiết bị và cơ sở dữ liệu. Thao tác này không thể hoàn tác.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: `Xóa tất cả (${count} lần)`,
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await FirebaseService.deleteAssessmentsByPatient(studyId, currentUser);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã xóa', `Đã xóa toàn bộ ${count} kết quả đánh giá của bệnh nhân ${studyId}.`);
+              loadData();
+            } else {
+              Alert.alert('Lỗi', res.error || 'Không thể xóa dữ liệu');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Xóa một bản ghi đánh giá điểm đau
+  const handleDeleteAssessment = (item: Assessment) => {
+    Alert.alert(
+      'Xác nhận xóa đánh giá',
+      `Bạn có chắc chắn muốn xóa bản ghi đánh giá của bệnh nhân ${item.study_id} (thời điểm: ${item.assessment_timepoint})?\n\nBản ghi này sẽ bị xóa khỏi bộ nhớ máy và cơ sở dữ liệu. Thao tác này không thể hoàn tác.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa vĩnh viễn',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await FirebaseService.deleteAssessment(item.assessment_id, currentUser);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã xóa', 'Bản ghi đánh giá đã được xóa thành công.');
+              loadData();
+            } else {
+              Alert.alert('Lỗi', res.error || 'Không thể xóa bản ghi.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Xóa tất cả đánh giá trên toàn bộ hệ thống
+  const handleClearAllAssessments = () => {
+    if (assessments.length === 0) {
+      Alert.alert('Thông báo', 'Hiện không có kết quả đánh giá nào để xóa.');
+      return;
+    }
+    Alert.alert(
+      '⚠️ Xác nhận xóa tất cả kết quả',
+      `Bạn có chắc chắn muốn xóa toàn bộ ${assessments.length} kết quả đánh giá trong hệ thống?\n\nThao tác này sẽ dọn sạch toàn bộ dữ liệu trên thiết bị và đồng bộ xóa trên Cơ sở dữ liệu. Thao tác không thể hoàn tác.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: `Xóa tất cả (${assessments.length})`,
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            const res = await FirebaseService.clearAllAssessments(currentUser);
+            setLoading(false);
+            if (res.success) {
+              Alert.alert('Đã dọn dẹp sạch', `Đã xóa toàn bộ ${assessments.length} kết quả đánh giá thành công.`);
+              loadData();
+            } else {
+              Alert.alert('Lỗi', res.error || 'Không thể xóa toàn bộ dữ liệu');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+
+  const filteredPatients = patients.filter((p) => {
+    // 1. Tìm kiếm theo mã study_id hoặc tên người tạo
+    const q = filterPatientId.trim().toUpperCase();
+    if (q) {
+      const matchId = p.study_id.toUpperCase().includes(q);
+      const matchCreator = p.created_by_name ? p.created_by_name.toUpperCase().includes(q) : false;
+      if (!matchId && !matchCreator) return false;
+    }
+
+    // 2. Lọc theo người tạo (dành cho Admin)
+    if (isAdmin && creatorFilter !== 'all') {
+      if (creatorFilter === 'my') {
+        if (p.created_by !== currentUser?.id) return false;
+      } else {
+        if (p.created_by !== creatorFilter) return false;
+      }
+    }
+
+    return true;
+  });
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalContainer}>
         {/* Modal Header */}
         <View style={styles.header}>
-          <View style={{ flex: 1 }}>
+          <View style={styles.headerLeftCol}>
             <View style={styles.headerTitleRow}>
-              <Text style={styles.headerTitle}>Góc Nghiên Cứu Viên (NCV)</Text>
+              <Text style={styles.headerTitle} numberOfLines={1}>Góc Nghiên Cứu Viên (NCV)</Text>
               {currentUser && (
                 <View
                   style={[
@@ -495,7 +964,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                 </View>
               )}
             </View>
-            <Text style={styles.headerSubtitle}>
+            <Text style={styles.headerSubtitle} numberOfLines={1}>
               {currentUser ? currentUser.name : 'Quản lý dữ liệu lâm sàng & Firebase'}
             </Text>
           </View>
@@ -507,12 +976,12 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                 onPress={handleLogout}
                 activeOpacity={0.7}
               >
-                <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+                <Ionicons name="log-out-outline" size={16} color="#DC2626" />
                 <Text style={styles.logoutBtnText}>Đăng xuất</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-              <Ionicons name="close" size={24} color="#334155" />
+            <TouchableOpacity style={styles.closeButton} onPress={onClose} activeOpacity={0.7}>
+              <Ionicons name="close" size={22} color="#334155" />
             </TouchableOpacity>
           </View>
         </View>
@@ -664,53 +1133,87 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
         ) : (
           /* --- CASE 2: AUTHORIZED (Đã đăng nhập quyền NCV trở lên) --- */
           <>
-            {/* Tab navigation */}
-            <View style={styles.tabBar}>
-              <TouchableOpacity
-                style={[styles.tabItem, activeTab === 'assessments' && styles.tabItemActive]}
-                onPress={() => setActiveTab('assessments')}
+            {/* Tab navigation dạng cuộn ngang độc lập (Phần 2.1) */}
+            <View style={styles.tabBarContainer}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.tabBarScroll}
               >
-                <Ionicons
-                  name="analytics-outline"
-                  size={18}
-                  color={activeTab === 'assessments' ? '#0284C7' : '#64748B'}
-                />
-                <Text
-                  style={[styles.tabText, activeTab === 'assessments' && styles.tabTextActive]}
-                >
-                  Đánh giá ({assessments.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.tabItem, activeTab === 'patients' && styles.tabItemActive]}
-                onPress={() => setActiveTab('patients')}
-              >
-                <Ionicons
-                  name="people-outline"
-                  size={18}
-                  color={activeTab === 'patients' ? '#0284C7' : '#64748B'}
-                />
-                <Text style={[styles.tabText, activeTab === 'patients' && styles.tabTextActive]}>
-                  Hồ sơ ({patients.length})
-                </Text>
-              </TouchableOpacity>
-
-              {isAdmin && (
                 <TouchableOpacity
-                  style={[styles.tabItem, activeTab === 'accounts' && styles.tabItemActive]}
-                  onPress={() => setActiveTab('accounts')}
+                  style={[styles.tabItem, activeTab === 'assessments' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('assessments')}
                 >
                   <Ionicons
-                    name="key-outline"
-                    size={18}
-                    color={activeTab === 'accounts' ? '#0284C7' : '#64748B'}
+                    name="analytics-outline"
+                    size={17}
+                    color={activeTab === 'assessments' ? '#0284C7' : '#64748B'}
                   />
-                  <Text style={[styles.tabText, activeTab === 'accounts' && styles.tabTextActive]}>
-                    Tài khoản & PIN ({researchers.length})
+                  <Text
+                    style={[styles.tabText, activeTab === 'assessments' && styles.tabTextActive]}
+                  >
+                    Đánh giá ({assessments.length})
                   </Text>
                 </TouchableOpacity>
-              )}
+
+                <TouchableOpacity
+                  style={[styles.tabItem, activeTab === 'patients' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('patients')}
+                >
+                  <Ionicons
+                    name="people-outline"
+                    size={17}
+                    color={activeTab === 'patients' ? '#0284C7' : '#64748B'}
+                  />
+                  <Text style={[styles.tabText, activeTab === 'patients' && styles.tabTextActive]}>
+                    Hồ sơ ({patients.length})
+                  </Text>
+                </TouchableOpacity>
+
+                {isAdmin && (
+                  <TouchableOpacity
+                    style={[styles.tabItem, activeTab === 'accounts' && styles.tabItemActive]}
+                    onPress={() => setActiveTab('accounts')}
+                  >
+                    <Ionicons
+                      name="key-outline"
+                      size={17}
+                      color={activeTab === 'accounts' ? '#0284C7' : '#64748B'}
+                    />
+                    <Text style={[styles.tabText, activeTab === 'accounts' && styles.tabTextActive]}>
+                      Tài khoản & PIN ({researchers.length})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.tabItem, activeTab === 'calibration' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('calibration')}
+                >
+                  <Ionicons
+                    name="resize-outline"
+                    size={17}
+                    color={activeTab === 'calibration' ? '#0284C7' : '#64748B'}
+                  />
+                  <Text style={[styles.tabText, activeTab === 'calibration' && styles.tabTextActive]}>
+                    Chuẩn 10 cm
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.tabItem, activeTab === 'clinical_config' && styles.tabItemActive]}
+                  onPress={() => setActiveTab('clinical_config')}
+                >
+                  <Ionicons
+                    name="settings-outline"
+                    size={17}
+                    color={activeTab === 'clinical_config' ? '#0284C7' : '#64748B'}
+                  />
+                  <Text style={[styles.tabText, activeTab === 'clinical_config' && styles.tabTextActive]}>
+                    Danh mục ({clinicalConfig?.activities.filter(a => a.is_active).length || 0})
+                  </Text>
+                </TouchableOpacity>
+              </ScrollView>
             </View>
 
             {/* Tab 1: Assessments */}
@@ -721,7 +1224,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     <Ionicons name="search" size={18} color="#94A3B8" />
                     <TextInput
                       style={styles.searchInput}
-                      placeholder="Lọc theo Study ID..."
+                      placeholder="Lọc theo Mã BN..."
                       value={filterStudyId}
                       onChangeText={setFilterStudyId}
                       placeholderTextColor="#94A3B8"
@@ -747,6 +1250,60 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     <Ionicons name="download-outline" size={16} color="#FFFFFF" />
                     <Text style={styles.actionBtnPrimaryText}>Xuất CSV</Text>
                   </TouchableOpacity>
+
+                  {/* Nút xóa tất cả kết quả đánh giá trong 1 lần */}
+                  {assessments.length > 0 && (
+                    <TouchableOpacity
+                      style={[
+                        styles.actionBtnSecondary,
+                        { borderColor: '#FECACA', backgroundColor: '#FEF2F2', paddingHorizontal: 10 },
+                      ]}
+                      onPress={handleClearAllAssessments}
+                    >
+                      <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                      <Text style={[styles.actionBtnText, { color: '#DC2626', fontWeight: '700' }]}>
+                        Xóa tất cả
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Thanh lọc nâng cao: Bối cảnh & Tên hoạt động */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.filterChip, contextFilter === 'all' && styles.filterChipActive]}
+                    onPress={() => setContextFilter('all')}
+                  >
+                    <Text style={[styles.filterChipText, contextFilter === 'all' && styles.filterChipTextActive]}>
+                      Tất cả ({assessments.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.filterChip, contextFilter === 'nghi' && styles.filterChipActive]}
+                    onPress={() => setContextFilter('nghi')}
+                  >
+                    <Text style={[styles.filterChipText, contextFilter === 'nghi' && styles.filterChipTextActive]}>
+                      Đau khi nghỉ
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.filterChip, contextFilter === 'hoat_dong' && styles.filterChipActive]}
+                    onPress={() => setContextFilter('hoat_dong')}
+                  >
+                    <Text style={[styles.filterChipText, contextFilter === 'hoat_dong' && styles.filterChipTextActive]}>
+                      Đau khi hoạt động
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TextInput
+                    style={[styles.searchInput, { flex: 1, height: 34, fontSize: 12, paddingHorizontal: 8 }]}
+                    placeholder="Lọc theo tên hoạt động..."
+                    value={filterActivityName}
+                    onChangeText={setFilterActivityName}
+                    placeholderTextColor="#94A3B8"
+                  />
                 </View>
 
                 {loading ? (
@@ -754,7 +1311,7 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     <ActivityIndicator size="large" color="#0284C7" />
                     <Text style={styles.loadingText}>Đang tải danh sách đánh giá...</Text>
                   </View>
-                ) : filteredAssessments.length === 0 ? (
+                ) : groupedAssessments.length === 0 ? (
                   <View style={styles.emptyBox}>
                     <Ionicons name="document-text-outline" size={48} color="#CBD5E1" />
                     <Text style={styles.emptyTitle}>Chưa có bản ghi nào</Text>
@@ -764,58 +1321,170 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   </View>
                 ) : (
                   <ScrollView style={styles.listScroll}>
-                    {filteredAssessments.map((item) => (
-                      <View key={item.assessment_id} style={styles.assessmentItem}>
-                        <View style={styles.itemHeader}>
-                          <View style={styles.idGroup}>
-                            <Text style={styles.itemStudyId}>{item.study_id}</Text>
-                            <View style={styles.itemTimepointBadge}>
-                              <Text style={styles.itemTimepointText}>{item.assessment_timepoint}</Text>
+                    {groupedAssessments.map((group) => {
+                      const isExpanded = !!expandedPatientIds[group.study_id];
+                      const totalCount = group.items.length;
+                      const latestItem = group.items[0];
+
+                      return (
+                        <View key={group.study_id} style={styles.patientGroupCard}>
+                          {/* Tiêu đề nhóm bệnh nhân (Bấm để mở/thu gọn) */}
+                          <TouchableOpacity
+                            style={styles.patientGroupHeader}
+                            onPress={() => togglePatientExpand(group.study_id)}
+                            activeOpacity={0.7}
+                          >
+                            <View style={styles.patientGroupLeft}>
+                              <View style={styles.patientAvatarBox}>
+                                <Ionicons name="person" size={18} color="#0284C7" />
+                              </View>
+                              <View style={{ marginLeft: 10, flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <Text style={styles.patientGroupStudyId}>{group.study_id}</Text>
+                                  <View style={styles.patientGroupBadge}>
+                                    <Text style={styles.patientGroupBadgeText}>{totalCount} lần đánh giá</Text>
+                                  </View>
+                                </View>
+                                <Text style={styles.patientGroupSub}>
+                                  Gần nhất: {new Date(group.latestTimestamp).toLocaleTimeString('vi-VN')} {new Date(group.latestTimestamp).toLocaleDateString('vi-VN')}
+                                  {latestItem && typeof latestItem.eVAS_score === 'number' ? ` (${latestItem.eVAS_score.toFixed(1)}/100)` : ''}
+                                </Text>
+                              </View>
                             </View>
-                            <View
-                              style={[
-                                styles.contextChip,
-                                item.pain_context === 'nghi' ? styles.chipRest : styles.chipMove,
-                              ]}
-                            >
-                              <Text
-                                style={[
-                                  styles.contextChipText,
-                                  item.pain_context === 'nghi' ? styles.textRest : styles.textMove,
-                                ]}
+
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              {/* Nút xóa tất cả lần đo của bệnh nhân này */}
+                              <TouchableOpacity
+                                style={styles.deletePatientGroupBtn}
+                                onPress={() => handleDeletePatientAssessments(group.study_id, totalCount)}
+                                activeOpacity={0.7}
                               >
-                                {item.pain_context === 'nghi' ? 'Lúc nghỉ' : 'Vận động'}
-                              </Text>
+                                <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                              </TouchableOpacity>
+
+                              <Ionicons
+                                name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                                size={20}
+                                color="#64748B"
+                              />
                             </View>
-                          </View>
+                          </TouchableOpacity>
 
-                          <View style={styles.scoreBadge}>
-                            <Text style={styles.scoreText}>{item.eVAS_score.toFixed(1)}</Text>
-                            <Text style={styles.scoreUnit}>/100</Text>
-                          </View>
-                        </View>
+                          {/* Danh sách các lần đánh giá chi tiết (Expanded) */}
+                          {isExpanded && (
+                            <View style={styles.patientGroupBody}>
+                              {group.items.map((item, idx) => {
+                                const isNotCompleted = item.completion_status === 'not_completed';
+                                const isRest = item.pain_context === 'nghi';
+                                const scoreDisplay = typeof item.eVAS_score === 'number' ? item.eVAS_score.toFixed(1) : 'K/A';
+                                const sessionIndex = totalCount - idx;
 
-                        <View style={styles.itemMeta}>
-                          <Text style={styles.itemDate}>
-                            {new Date(item.submit_timestamp).toLocaleTimeString('vi-VN')} •{' '}
-                            {new Date(item.submit_timestamp).toLocaleDateString('vi-VN')}
-                          </Text>
-                          <Text style={styles.itemDuration}>{item.duration_seconds}s thao tác</Text>
-                          <View
-                            style={[
-                              styles.statusDot,
-                              {
-                                backgroundColor:
-                                  item.save_status === 'success' ? '#10B981' : '#F59E0B',
-                              },
-                            ]}
-                          />
-                          <Text style={styles.statusLabel}>
-                            {item.save_status === 'success' ? 'Firebase' : 'Local'}
-                          </Text>
+                                return (
+                                  <View key={item.assessment_id} style={styles.sessionItem}>
+                                    <View style={styles.sessionHeaderRow}>
+                                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap', flex: 1 }}>
+                                        <Text style={styles.sessionIndexText}>Lần #{sessionIndex}</Text>
+                                        <View style={styles.sessionTimepointBadge}>
+                                          <Text style={styles.sessionTimepointText}>{item.assessment_timepoint}</Text>
+                                        </View>
+                                        <View
+                                          style={[
+                                            styles.contextChip,
+                                            isRest ? styles.chipRest : styles.chipMove,
+                                          ]}
+                                        >
+                                          <Text
+                                            style={[
+                                              styles.contextChipText,
+                                              isRest ? styles.textRest : styles.textMove,
+                                            ]}
+                                          >
+                                            {isRest ? CLINICAL_DEFINITIONS.RESTING_LABEL : CLINICAL_DEFINITIONS.ACTIVITY_LABEL}
+                                          </Text>
+                                        </View>
+                                      </View>
+
+                                      <View style={[styles.scoreBadge, isNotCompleted && { borderColor: '#F59E0B' }]}>
+                                        <Text style={[styles.scoreText, isNotCompleted && { color: '#D97706', fontSize: 13 }]}>
+                                          {isNotCompleted ? 'Không đo' : scoreDisplay}
+                                        </Text>
+                                        {!isNotCompleted && <Text style={styles.scoreUnit}>/100</Text>}
+                                      </View>
+                                    </View>
+
+                                    {/* Chi tiết hoạt động và nhóm hoạt động nếu có */}
+                                    {!isRest && (item.activity_name || item.activity_group) && (
+                                      <View style={{ marginVertical: 3 }}>
+                                        {item.activity_group && (
+                                          <Text style={{ fontSize: 11, fontWeight: '700', color: '#0284C7', marginBottom: 2 }}>
+                                            {item.activity_group}
+                                          </Text>
+                                        )}
+                                        {item.activity_name && (
+                                          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                                            <Ionicons name="walk" size={13} color="#D97706" />
+                                            <Text style={{ fontSize: 12, fontWeight: '700', color: '#1E293B' }}>
+                                              {item.activity_name}
+                                            </Text>
+                                            {item.activity_execution_status && (
+                                              <Text style={{ fontSize: 11, color: '#059669', fontStyle: 'italic' }}>
+                                                • {EXECUTION_STATUS_LABELS[item.activity_execution_status] || item.activity_execution_status}
+                                              </Text>
+                                            )}
+                                          </View>
+                                        )}
+                                      </View>
+                                    )}
+
+                                    {/* Chi tiết lý do không hoàn thành nếu có */}
+                                    {isNotCompleted && (
+                                      <View style={{ backgroundColor: '#FFFBEB', padding: 6, borderRadius: 6, marginVertical: 4 }}>
+                                        <Text style={{ fontSize: 11, color: '#B45309', fontWeight: '600' }}>
+                                          Lý do không thực hiện: {item.reason_not_completed ? (REASON_NOT_COMPLETED_LABELS[item.reason_not_completed as keyof typeof REASON_NOT_COMPLETED_LABELS] || item.reason_not_completed) : 'Chưa ghi nhận'}
+                                        </Text>
+                                      </View>
+                                    )}
+
+                                    <View style={styles.sessionMetaRow}>
+                                      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, flex: 1 }}>
+                                        <Text style={styles.itemDate}>
+                                          {new Date(item.submit_timestamp).toLocaleTimeString('vi-VN')} •{' '}
+                                          {new Date(item.submit_timestamp).toLocaleDateString('vi-VN')}
+                                        </Text>
+                                        <Text style={styles.itemDuration}>
+                                          {item.duration_seconds}s
+                                        </Text>
+                                        <View
+                                          style={[
+                                            styles.statusDot,
+                                            {
+                                              backgroundColor:
+                                                item.save_status === 'success' ? '#10B981' : '#F59E0B',
+                                            },
+                                          ]}
+                                        />
+                                        <Text style={styles.statusLabel}>
+                                          {item.save_status === 'success' ? 'Firebase' : 'Local'}
+                                        </Text>
+                                      </View>
+
+                                      <TouchableOpacity
+                                        style={styles.sessionDeleteBtn}
+                                        onPress={() => handleDeleteAssessment(item)}
+                                        activeOpacity={0.7}
+                                      >
+                                        <Ionicons name="trash-outline" size={13} color="#DC2626" />
+                                        <Text style={styles.sessionDeleteText}>Xóa lần này</Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          )}
                         </View>
-                      </View>
-                    ))}
+                      );
+                    })}
                   </ScrollView>
                 )}
               </View>
@@ -826,12 +1495,122 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
               <View style={styles.tabContent}>
                 {patientViewMode === 'list' ? (
                   <>
+                    {/* Phân quyền Banner */}
+                    <View
+                      style={[
+                        styles.permissionBanner,
+                        isAdmin ? styles.permissionBannerAdmin : styles.permissionBannerNCV,
+                      ]}
+                    >
+                      <Ionicons
+                        name={isAdmin ? 'shield-checkmark' : 'lock-closed'}
+                        size={20}
+                        color={isAdmin ? '#B45309' : '#0284C7'}
+                      />
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text
+                          style={[
+                            styles.permissionBannerTitle,
+                            isAdmin ? styles.permissionTextAdmin : styles.permissionTextNCV,
+                          ]}
+                        >
+                          {isAdmin
+                            ? '👑 Quyền Quản trị viên (Admin) — Toàn quyền đề tài'
+                            : '🔒 Phân quyền cá nhân: Quản lý bệnh nhân theo người tạo'}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.permissionBannerSub,
+                            isAdmin ? styles.permissionSubAdmin : styles.permissionSubNCV,
+                          ]}
+                        >
+                          {isAdmin
+                            ? `Bạn có thể xem và quản lý tất cả ${patients.length} bệnh nhân trong hệ thống.`
+                            : `Bạn đang quản lý ${patients.length} bệnh nhân do bạn tạo. Người khác không thể xem hồ sơ này.`}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Bộ lọc người tạo dành riêng cho Quản trị viên (Admin) */}
+                    {isAdmin && (
+                      <View style={styles.creatorFilterContainer}>
+                        <Text style={styles.creatorFilterLabel}>Lọc theo người tạo:</Text>
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.creatorFilterScroll}
+                        >
+                          <TouchableOpacity
+                            style={[
+                              styles.creatorPill,
+                              creatorFilter === 'all' && styles.creatorPillActive,
+                            ]}
+                            onPress={() => setCreatorFilter('all')}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.creatorPillText,
+                                creatorFilter === 'all' && styles.creatorPillTextActive,
+                              ]}
+                            >
+                              Tất cả ({patients.length})
+                            </Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity
+                            style={[
+                              styles.creatorPill,
+                              creatorFilter === 'my' && styles.creatorPillActive,
+                            ]}
+                            onPress={() => setCreatorFilter('my')}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.creatorPillText,
+                                creatorFilter === 'my' && styles.creatorPillTextActive,
+                              ]}
+                            >
+                              Của tôi ({patients.filter((p) => p.created_by === currentUser?.id).length})
+                            </Text>
+                          </TouchableOpacity>
+
+                          {researchers
+                            .filter((r) => r.id !== currentUser?.id)
+                            .map((r) => {
+                              const count = patients.filter((p) => p.created_by === r.id).length;
+                              return (
+                                <TouchableOpacity
+                                  key={r.id}
+                                  style={[
+                                    styles.creatorPill,
+                                    creatorFilter === r.id && styles.creatorPillActive,
+                                  ]}
+                                  onPress={() => setCreatorFilter(r.id)}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.creatorPillText,
+                                      creatorFilter === r.id && styles.creatorPillTextActive,
+                                    ]}
+                                  >
+                                    {r.name} ({count})
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                        </ScrollView>
+                      </View>
+                    )}
+
                     <View style={styles.actionRow}>
                       <View style={styles.searchBox}>
                         <Ionicons name="search" size={18} color="#94A3B8" />
                         <TextInput
                           style={styles.searchInput}
-                          placeholder="Lọc mã hồ sơ (study_id)..."
+                          placeholder="Lọc mã hồ sơ hoặc tên NCV..."
                           value={filterPatientId}
                           onChangeText={setFilterPatientId}
                           placeholderTextColor="#94A3B8"
@@ -861,18 +1640,22 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     ) : filteredPatients.length === 0 ? (
                       <View style={styles.emptyBox}>
                         <Ionicons name="people-outline" size={48} color="#CBD5E1" />
-                        <Text style={styles.emptyTitle}>Chưa có hồ sơ bệnh án nào</Text>
+                        <Text style={styles.emptyTitle}>
+                          {filterPatientId || creatorFilter !== 'all'
+                            ? 'Không tìm thấy hồ sơ nào'
+                            : 'Chưa có hồ sơ bệnh án nào'}
+                        </Text>
                         <Text style={styles.emptySubtitle}>
-                          {filterPatientId
-                            ? `Không tìm thấy hồ sơ nào khớp với "${filterPatientId}"`
-                            : 'Nhấn "+ Thêm hồ sơ" để đăng ký hồ sơ sản phụ mới vào nghiên cứu.'}
+                          {filterPatientId || creatorFilter !== 'all'
+                            ? 'Thử thay đổi từ khóa tìm kiếm hoặc bỏ lọc người tạo.'
+                            : 'Nhấn "+ Thêm hồ sơ" để đăng ký hồ sơ sản phụ mới thuộc quyền quản lý của bạn.'}
                         </Text>
                         <TouchableOpacity
                           style={[styles.actionBtnPrimary, { marginTop: 14 }]}
                           onPress={handleAddNewPatient}
                         >
                           <Ionicons name="add" size={18} color="#FFFFFF" />
-                          <Text style={styles.actionBtnPrimaryText}>Thêm hồ sơ đầu tiên</Text>
+                          <Text style={styles.actionBtnPrimaryText}>Thêm hồ sơ mới</Text>
                         </TouchableOpacity>
                       </View>
                     ) : (
@@ -891,11 +1674,35 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                   <Text style={styles.patientIdText}>{patient.study_id}</Text>
                                 </View>
 
-                                <View style={styles.assessmentCountTag}>
-                                  <Ionicons name="pulse" size={13} color="#059669" />
-                                  <Text style={styles.assessmentCountText}>
-                                    {patientAssessmentsCount} lần đo eVAS
-                                  </Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  {/* Creator Badge */}
+                                  {isAdmin ? (
+                                    patient.created_by === currentUser?.id ? (
+                                      <View style={styles.myCreatorBadge}>
+                                        <Ionicons name="person" size={11} color="#059669" />
+                                        <Text style={styles.myCreatorBadgeText}>Tôi tạo</Text>
+                                      </View>
+                                    ) : (
+                                      <View style={styles.otherCreatorBadge}>
+                                        <Ionicons name="person-outline" size={11} color="#4338CA" />
+                                        <Text style={styles.otherCreatorBadgeText}>
+                                          {patient.created_by_name || 'NCV'}
+                                        </Text>
+                                      </View>
+                                    )
+                                  ) : (
+                                    <View style={styles.myCreatorBadge}>
+                                      <Ionicons name="lock-closed" size={11} color="#059669" />
+                                      <Text style={styles.myCreatorBadgeText}>Của tôi</Text>
+                                    </View>
+                                  )}
+
+                                  <View style={styles.assessmentCountTag}>
+                                    <Ionicons name="pulse" size={13} color="#059669" />
+                                    <Text style={styles.assessmentCountText}>
+                                      {patientAssessmentsCount} lần đo eVAS
+                                    </Text>
+                                  </View>
                                 </View>
                               </View>
 
@@ -944,6 +1751,14 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                       : '---'}
                                   </Text>
                                 </View>
+
+                                <View style={styles.patientDetailItemFull}>
+                                  <Text style={styles.detailLabel}>Người tạo & Quản lý:</Text>
+                                  <Text style={[styles.detailValue, { color: '#0F172A', fontWeight: '700' }]}>
+                                    {patient.created_by_name || 'PGS. TS. Chủ nhiệm Đề tài'}
+                                    {patient.created_by === currentUser?.id ? ' (Chính bạn)' : ''}
+                                  </Text>
+                                </View>
                               </View>
 
                               {/* Action Footer */}
@@ -967,13 +1782,25 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                                   </View>
                                 )}
 
-                                <TouchableOpacity
-                                  style={styles.patientActionEditBtn}
-                                  onPress={() => handleEditPatient(patient)}
-                                >
-                                  <Ionicons name="create-outline" size={15} color="#475569" />
-                                  <Text style={styles.patientActionEditText}>Sửa hồ sơ</Text>
-                                </TouchableOpacity>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                  <TouchableOpacity
+                                    style={styles.patientActionEditBtn}
+                                    onPress={() => handleEditPatient(patient)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Ionicons name="create-outline" size={15} color="#475569" />
+                                    <Text style={styles.patientActionEditText}>Sửa</Text>
+                                  </TouchableOpacity>
+
+                                  <TouchableOpacity
+                                    style={styles.patientActionDeleteBtn}
+                                    onPress={() => handleDeletePatient(patient)}
+                                    activeOpacity={0.7}
+                                  >
+                                    <Ionicons name="trash-outline" size={15} color="#DC2626" />
+                                    <Text style={styles.patientActionDeleteText}>Xóa</Text>
+                                  </TouchableOpacity>
+                                </View>
                               </View>
                             </View>
                           );
@@ -996,21 +1823,48 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     </View>
 
                     <Text style={styles.sectionHeader}>
-                      {newStudyId && patients.some((p) => p.study_id === newStudyId)
-                        ? `Cập nhật hồ sơ: ${newStudyId}`
+                      {editingPatient
+                        ? `Cập nhật hồ sơ: ${editingPatient.study_id}`
                         : 'Thêm hồ sơ sản phụ mới (Hồ sơ bệnh án)'}
                     </Text>
                     <Text style={styles.sectionNote}>
                       Theo PRD Mục B: Dữ liệu chuyên sâu do NCV thu thập riêng để đối chiếu với điểm eVAS.
                     </Text>
 
+                    {/* Creator Permission Info Box */}
+                    <View style={styles.creatorFormInfoBox}>
+                      <Ionicons
+                        name={editingPatient ? 'shield-checkmark' : 'person-add'}
+                        size={20}
+                        color="#0284C7"
+                      />
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={styles.creatorFormInfoTitle}>
+                          {editingPatient ? 'Thông tin phân quyền hồ sơ:' : 'Phân quyền người tạo:'}
+                        </Text>
+                        <Text style={styles.creatorFormInfoText}>
+                          {editingPatient
+                            ? `Hồ sơ này do "${editingPatient.created_by_name || 'Hệ thống'}" tạo. Chỉ người tạo và Quản trị viên (Admin) mới có quyền xem & chỉnh sửa.`
+                            : `Hồ sơ sẽ được liên kết trực tiếp với tài khoản của bạn: "${currentUser?.name}" (${currentUser?.role === 'admin' ? 'Quản trị viên' : 'Nghiên cứu viên'}). Các NCV khác sẽ không thể xem hồ sơ này.`}
+                        </Text>
+                      </View>
+                    </View>
+
                     <View style={styles.formGroup}>
-                      <Text style={styles.label}>Mã nghiên cứu (study_id) *</Text>
+                      <Text style={styles.label}>
+                        Mã nghiên cứu (study_id) *{' '}
+                        {editingPatient && (
+                          <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: 'normal' }}>
+                            (Không thể thay đổi mã khi sửa)
+                          </Text>
+                        )}
+                      </Text>
                       <TextInput
-                        style={styles.formInput}
+                        style={[styles.formInput, editingPatient && styles.formInputDisabled]}
                         value={newStudyId}
                         onChangeText={(t) => setNewStudyId(t.toUpperCase())}
                         placeholder="VD: CS001"
+                        editable={!editingPatient}
                       />
                     </View>
 
@@ -1071,7 +1925,10 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                     <View style={styles.formActionsRow}>
                       <TouchableOpacity
                         style={styles.formCancelBtn}
-                        onPress={() => setPatientViewMode('list')}
+                        onPress={() => {
+                          setEditingPatient(null);
+                          setPatientViewMode('list');
+                        }}
                       >
                         <Text style={styles.formCancelBtnText}>Hủy</Text>
                       </TouchableOpacity>
@@ -1082,7 +1939,9 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                         activeOpacity={0.85}
                       >
                         <Ionicons name="save-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.submitPatientBtnText}>Lưu hồ sơ</Text>
+                        <Text style={styles.submitPatientBtnText}>
+                          {editingPatient ? 'Cập nhật hồ sơ' : 'Lưu hồ sơ'}
+                        </Text>
                       </TouchableOpacity>
                     </View>
                   </ScrollView>
@@ -1305,6 +2164,471 @@ export const ResearcherModal: React.FC<ResearcherModalProps> = ({
                   </ScrollView>
                 )}
               </View>
+            )}
+
+            {/* Tab 4: Hiệu chuẩn Thước đo 10cm */}
+            {activeTab === 'calibration' && (
+              <ScrollView style={styles.tabContent} bounces={false}>
+                <View style={styles.calibCard}>
+                  <View style={styles.calibHeaderRow}>
+                    <Ionicons name="shield-checkmark" size={20} color="#0284C7" />
+                    <Text style={styles.calibHeaderTitle}>Chuẩn hóa Kích thước Đo Lường Lâm Sàng</Text>
+                  </View>
+                  <Text style={styles.calibDescription}>
+                    Thang đo VAS hướng dọc trên ứng dụng bắt buộc phải đạt chính xác <Text style={{ fontWeight: '800' }}>10,0 cm (100 mm)</Text> thực tế trên mọi thiết bị điện thoại, đảm bảo độ giá trị tương đồng 1:1 với thang đo giấy trong đề tài nghiên cứu.
+                  </Text>
+
+                  <View style={styles.calibStepBox}>
+                    <Text style={styles.calibStepText}>
+                      👉 <Text style={{ fontWeight: '700' }}>Hướng dẫn:</Text> Đặt một chiếc thước kẻ milimet cơ học áp sát màn hình từ vạch 0 đến vạch 100 của thước màu đỏ bên dưới. Nếu có sai lệch do kính cường lực, dùng các nút +/- 0.5mm để tinh chỉnh.
+                    </Text>
+                  </View>
+
+                  {/* Nút điều chỉnh */}
+                  <View style={styles.calibAdjustRow}>
+                    <TouchableOpacity
+                      style={styles.calibAdjustBtn}
+                      onPress={() => {
+                        const newF = Math.max(0.7, Math.min(1.3, Math.round((calibrationFactor - 0.005) * 1000) / 1000));
+                        setCalibrationFactor(newF);
+                        setDiagnostics(getDisplayDiagnostics(newF));
+                      }}
+                    >
+                      <Ionicons name="remove-circle-outline" size={18} color="#DC2626" />
+                      <Text style={styles.calibAdjustBtnText}>- 0.5 mm</Text>
+                    </TouchableOpacity>
+
+                    <View style={{ alignItems: 'center' }}>
+                      <Text style={styles.calibValueText}>
+                        {(VAS_CLINICAL_LENGTH_MM * calibrationFactor).toFixed(1)} mm
+                      </Text>
+                      <Text style={styles.calibSubText}>
+                        ({getCalibratedVASHeight(calibrationFactor)} pt • {(calibrationFactor * 100).toFixed(1)}%)
+                      </Text>
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.calibAdjustBtn}
+                      onPress={() => {
+                        const newF = Math.max(0.7, Math.min(1.3, Math.round((calibrationFactor + 0.005) * 1000) / 1000));
+                        setCalibrationFactor(newF);
+                        setDiagnostics(getDisplayDiagnostics(newF));
+                      }}
+                    >
+                      <Ionicons name="add-circle-outline" size={18} color="#10B981" />
+                      <Text style={styles.calibAdjustBtnText}>+ 0.5 mm</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.calibSecondaryRow}>
+                    <TouchableOpacity
+                      style={styles.calibSecondaryBtn}
+                      onPress={async () => {
+                        await resetCalibrationFactor();
+                        setCalibrationFactor(1.0);
+                        setDiagnostics(getDisplayDiagnostics(1.0));
+                        Alert.alert('Khôi phục thành công', 'Đã đặt lại kích thước theo chuẩn tự động của hệ thống.');
+                      }}
+                    >
+                      <Ionicons name="refresh" size={14} color="#64748B" />
+                      <Text style={styles.calibSecondaryBtnText}>Đặt lại Mặc định (100mm)</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.calibSaveBtn}
+                      onPress={async () => {
+                        await saveCalibrationFactor(calibrationFactor);
+                        Alert.alert('✅ Đã lưu', 'Kích thước thước đo 10cm đã được cập nhật thành công cho mọi phiên đo.');
+                      }}
+                    >
+                      <Ionicons name="save-outline" size={16} color="#FFFFFF" />
+                      <Text style={styles.calibSaveBtnText}>Lưu Hiệu Chuẩn</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Vùng Thước kẻ trực quan 10cm */}
+                <View style={styles.calibRulerCard}>
+                  <Text style={styles.calibRulerTitle}>Đối chiếu Thước 10,0 cm (1:1 Thực tế)</Text>
+
+                  <View style={styles.calibRulerArea}>
+                    {/* Thước milimet */}
+                    <View style={[styles.calibVirtualRuler, { height: getCalibratedVASHeight(calibrationFactor) }]}>
+                      {Array.from({ length: 11 }).map((_, cm) => {
+                        const top = ((10 - cm) / 10) * getCalibratedVASHeight(calibrationFactor);
+                        const isMajor = cm === 0 || cm === 5 || cm === 10;
+                        return (
+                          <View key={`cm-calib-${cm}`} style={[styles.calibTickRow, { top: top - 1 }]}>
+                            <View
+                              style={[
+                                styles.calibTickLine,
+                                {
+                                  width: isMajor ? 20 : 12,
+                                  backgroundColor: isMajor ? '#0F172A' : '#64748B',
+                                  height: isMajor ? 2.5 : 1.5,
+                                },
+                              ]}
+                            />
+                            <Text style={[styles.calibTickText, isMajor && styles.calibTickTextMajor]}>
+                              {cm} cm
+                            </Text>
+                          </View>
+                        );
+                      })}
+                    </View>
+
+                    {/* Thanh VAS đỏ */}
+                    <View style={styles.calibVasCol}>
+                      <View style={styles.calibStopperTop} />
+                      <View style={[styles.calibVasBar, { height: getCalibratedVASHeight(calibrationFactor) }]} />
+                      <View style={styles.calibStopperBottom} />
+                    </View>
+
+                    {/* Thẻ CCCD đối chiếu 85.6mm */}
+                    <View style={styles.calibCardRefCol}>
+                      <View style={[styles.calibCardRefBox, { height: mmToPixels(REFERENCE_CARD_LENGTH_MM, calibrationFactor) }]}>
+                        <Ionicons name="card-outline" size={16} color="#0284C7" />
+                        <Text style={styles.calibCardRefTitle}>Thẻ CCCD / ATM</Text>
+                        <Text style={styles.calibCardRefMm}>85.6 mm</Text>
+                        <Text style={styles.calibCardRefSub}>(ISO 7810)</Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Thông số chẩn đoán thiết bị */}
+                {diagnostics && (
+                  <View style={styles.calibDiagCard}>
+                    <Text style={styles.calibDiagTitle}>Thông số Màn hình Thiết bị</Text>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Hệ điều hành:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.os?.toUpperCase()}</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Độ phân giải màn hình:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.screenWidth} × {diagnostics.screenHeight} pt/dp</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Mật độ điểm ảnh (PixelRatio):</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.pixelRatio}x</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Tỉ lệ quy đổi mm:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.basePointsPerMm} pt/mm</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Chiều cao VAS 100mm xuất xưởng:</Text>
+                      <Text style={styles.calibDiagVal}>{diagnostics.calculatedHeight100mm} pt/dp</Text>
+                    </View>
+                    <View style={styles.calibDiagRow}>
+                      <Text style={styles.calibDiagLabel}>Chiều cao VAS sau hiệu chuẩn:</Text>
+                      <Text style={[styles.calibDiagVal, { color: '#0284C7', fontWeight: '800' }]}>
+                        {diagnostics.finalCalibratedHeight} pt/dp
+                      </Text>
+                    </View>
+                  </View>
+                )}
+                <View style={{ height: 40 }} />
+              </ScrollView>
+            )}
+
+            {/* Tab 5: Cấu hình Danh mục Lâm sàng (Hoạt động, Nhóm mổ, Khu vực) */}
+            {activeTab === 'clinical_config' && (
+              <ScrollView style={styles.tabContent} bounces={false}>
+                {/* Hướng dẫn và Cảnh báo an toàn y tế */}
+                <View style={styles.permissionBanner}>
+                  <Ionicons name="shield-checkmark" size={20} color="#0284C7" />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={styles.permissionBannerTitle}>Cấu hình Danh mục Lâm sàng theo Đơn vị</Text>
+                    <Text style={{ fontSize: 12, color: '#0369A1', lineHeight: 17, marginTop: 2 }}>
+                      {CLINICAL_DEFINITIONS.CLINICAL_DISCLAIMER} Các danh mục dưới đây phải được xem là cấu hình chờ nhân viên y tế / hội đồng lâm sàng của bệnh viện xác nhận. Không tự động cho rằng mọi hoạt động an toàn cho mọi loại phẫu thuật.
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Danh mục Hoạt động */}
+                <View style={styles.calibCard}>
+                  <Text style={styles.calibHeaderTitle}>Danh mục Hoạt động ({clinicalConfig?.activities.length || 0})</Text>
+                  <Text style={styles.calibDescription}>
+                    Bật/tắt các hoạt động áp dụng cho quy trình đánh giá đau khi vận động tại khoa phòng:
+                  </Text>
+
+                  {/* Form thêm hoạt động */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginVertical: 10 }}>
+                    <TextInput
+                      style={[styles.searchInput, { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BAE6FD' }]}
+                      placeholder="Thêm hoạt động mới đã phê duyệt..."
+                      value={newActivityInput}
+                      onChangeText={setNewActivityInput}
+                      placeholderTextColor="#94A3B8"
+                    />
+                    <TouchableOpacity
+                      style={[styles.actionBtnPrimary, { paddingHorizontal: 12 }]}
+                      onPress={handleAddClinicalActivity}
+                    >
+                      <Ionicons name="add" size={18} color="#FFFFFF" />
+                      <Text style={styles.actionBtnPrimaryText}>Thêm</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Danh sách hoạt động */}
+                  {clinicalConfig?.activities.map((act) => (
+                    <View
+                      key={act.id}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        backgroundColor: act.is_active ? '#FFFFFF' : '#F8FAFC',
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: act.is_active ? '#E2E8F0' : '#E2E8F0',
+                        marginBottom: 6,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
+                        <Ionicons
+                          name={act.is_active ? 'checkmark-circle' : 'close-circle-outline'}
+                          size={18}
+                          color={act.is_active ? '#059669' : '#94A3B8'}
+                        />
+                        <Text
+                          style={{
+                            fontSize: 13,
+                            fontWeight: '600',
+                            color: act.is_active ? '#1E293B' : '#94A3B8',
+                            textDecorationLine: act.is_active ? 'none' : 'line-through',
+                            flex: 1,
+                          }}
+                        >
+                          {act.name}
+                        </Text>
+                      </View>
+
+                      <TouchableOpacity
+                        style={{
+                          paddingVertical: 4,
+                          paddingHorizontal: 10,
+                          borderRadius: 6,
+                          backgroundColor: act.is_active ? '#FEF2F2' : '#ECFDF5',
+                        }}
+                        onPress={() => handleToggleClinicalActivity(act)}
+                      >
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            fontWeight: '700',
+                            color: act.is_active ? '#DC2626' : '#059669',
+                          }}
+                        >
+                          {act.is_active ? 'Tạm tắt' : 'Kích hoạt'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Danh mục Nhóm Phẫu thuật */}
+                <View style={styles.calibCard}>
+                  <Text style={styles.calibHeaderTitle}>
+                    Danh mục Nhóm / Vị trí Phẫu thuật ({clinicalConfig?.surgery_groups?.length || 0})
+                  </Text>
+                  <Text style={styles.calibDescription}>
+                    Bổ sung hoặc quản lý các nhóm phẫu thuật được áp dụng tại bệnh viện:
+                  </Text>
+
+                  {/* Form thêm nhóm phẫu thuật */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginVertical: 10 }}>
+                    <TextInput
+                      style={[styles.searchInput, { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BAE6FD' }]}
+                      placeholder="Thêm nhóm/vị trí phẫu thuật mới..."
+                      value={newSurgeryInput}
+                      onChangeText={setNewSurgeryInput}
+                      placeholderTextColor="#94A3B8"
+                    />
+                    <TouchableOpacity
+                      style={[styles.actionBtnPrimary, { paddingHorizontal: 12 }]}
+                      onPress={handleAddSurgeryGroup}
+                    >
+                      <Ionicons name="add" size={18} color="#FFFFFF" />
+                      <Text style={styles.actionBtnPrimaryText}>Thêm</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Danh sách nhóm phẫu thuật */}
+                  {(clinicalConfig?.surgery_groups || []).map((sg) => (
+                    <View
+                      key={sg.id}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        backgroundColor: sg.is_active ? '#FFFFFF' : '#F8FAFC',
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: '#E2E8F0',
+                        marginBottom: 6,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
+                        <Ionicons
+                          name={sg.is_active ? 'checkmark-circle' : 'close-circle-outline'}
+                          size={18}
+                          color={sg.is_active ? '#0284C7' : '#94A3B8'}
+                        />
+                        <Text
+                          style={{
+                            fontSize: 13,
+                            fontWeight: '600',
+                            color: sg.is_active ? '#1E293B' : '#94A3B8',
+                            textDecorationLine: sg.is_active ? 'none' : 'line-through',
+                            flex: 1,
+                          }}
+                        >
+                          {sg.name}
+                        </Text>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity
+                          style={{
+                            paddingVertical: 4,
+                            paddingHorizontal: 8,
+                            borderRadius: 6,
+                            backgroundColor: sg.is_active ? '#FEF2F2' : '#E0F2FE',
+                          }}
+                          onPress={() => handleToggleSurgeryGroup(sg)}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '700',
+                              color: sg.is_active ? '#DC2626' : '#0284C7',
+                            }}
+                          >
+                            {sg.is_active ? 'Tạm tắt' : 'Kích hoạt'}
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={{
+                            padding: 4,
+                            borderRadius: 6,
+                            backgroundColor: '#F1F5F9',
+                          }}
+                          onPress={() => handleDeleteSurgeryGroup(sg)}
+                        >
+                          <Ionicons name="trash-outline" size={14} color="#64748B" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+
+                {/* Danh mục Khu vực chăm sóc */}
+                <View style={styles.calibCard}>
+                  <Text style={styles.calibHeaderTitle}>
+                    Danh mục Khu vực Chăm sóc ({clinicalConfig?.care_locations?.length || 0})
+                  </Text>
+                  <Text style={styles.calibDescription}>
+                    Bổ sung hoặc quản lý các khu vực phòng bệnh / khoa điều trị:
+                  </Text>
+
+                  {/* Form thêm khu vực chăm sóc */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginVertical: 10 }}>
+                    <TextInput
+                      style={[styles.searchInput, { flex: 1, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#BAE6FD' }]}
+                      placeholder="Thêm khu vực chăm sóc mới..."
+                      value={newLocationInput}
+                      onChangeText={setNewLocationInput}
+                      placeholderTextColor="#94A3B8"
+                    />
+                    <TouchableOpacity
+                      style={[styles.actionBtnPrimary, { paddingHorizontal: 12 }]}
+                      onPress={handleAddCareLocation}
+                    >
+                      <Ionicons name="add" size={18} color="#FFFFFF" />
+                      <Text style={styles.actionBtnPrimaryText}>Thêm</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Danh sách khu vực chăm sóc */}
+                  {(clinicalConfig?.care_locations || []).map((loc) => (
+                    <View
+                      key={loc.id}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingVertical: 10,
+                        paddingHorizontal: 12,
+                        backgroundColor: loc.is_active ? '#FFFFFF' : '#F8FAFC',
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: '#E2E8F0',
+                        marginBottom: 6,
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, gap: 8 }}>
+                        <Ionicons
+                          name={loc.is_active ? 'checkmark-circle' : 'close-circle-outline'}
+                          size={18}
+                          color={loc.is_active ? '#059669' : '#94A3B8'}
+                        />
+                        <Text
+                          style={{
+                            fontSize: 13,
+                            fontWeight: '600',
+                            color: loc.is_active ? '#1E293B' : '#94A3B8',
+                            textDecorationLine: loc.is_active ? 'none' : 'line-through',
+                            flex: 1,
+                          }}
+                        >
+                          {loc.name}
+                        </Text>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity
+                          style={{
+                            paddingVertical: 4,
+                            paddingHorizontal: 8,
+                            borderRadius: 6,
+                            backgroundColor: loc.is_active ? '#FEF2F2' : '#ECFDF5',
+                          }}
+                          onPress={() => handleToggleCareLocation(loc)}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              fontWeight: '700',
+                              color: loc.is_active ? '#DC2626' : '#059669',
+                            }}
+                          >
+                            {loc.is_active ? 'Tạm tắt' : 'Kích hoạt'}
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={{
+                            padding: 4,
+                            borderRadius: 6,
+                            backgroundColor: '#F1F5F9',
+                          }}
+                          onPress={() => handleDeleteCareLocation(loc)}
+                        >
+                          <Ionicons name="trash-outline" size={14} color="#64748B" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+                <View style={{ height: 40 }} />
+              </ScrollView>
             )}
           </>
         )}
@@ -1624,21 +2948,46 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 18,
-    paddingTop: Platform.OS === 'ios' ? 50 : 18,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingTop: Platform.OS === 'ios' ? 48 : 14,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
+    gap: 8,
+  },
+  headerLeftCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  filterChip: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+  },
+  filterChipActive: {
+    backgroundColor: '#E0F2FE',
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  filterChipTextActive: {
+    color: '#0284C7',
+    fontWeight: '700',
   },
   headerTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 6,
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
     color: '#0F172A',
+    flexShrink: 1,
   },
   roleBadge: {
     paddingVertical: 2,
@@ -1874,6 +3223,17 @@ const styles = StyleSheet.create({
   },
 
   // Authorized Dashboard Styles
+  tabBarContainer: {
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  tabBarScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    gap: 4,
+  },
   tabBar: {
     flexDirection: 'row',
     backgroundColor: '#FFFFFF',
@@ -1881,17 +3241,19 @@ const styles = StyleSheet.create({
     borderBottomColor: '#E2E8F0',
   },
   tabItem: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     gap: 6,
     borderBottomWidth: 3,
     borderBottomColor: 'transparent',
+    borderRadius: 8,
   },
   tabItemActive: {
     borderBottomColor: '#0284C7',
+    backgroundColor: '#F0F9FF',
   },
   tabText: {
     fontSize: 13,
@@ -1900,6 +3262,7 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: '#0284C7',
+    fontWeight: '800',
   },
   tabContent: {
     flex: 1,
@@ -1907,8 +3270,9 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 16,
+    marginBottom: 12,
     alignItems: 'center',
   },
   searchBox: {
@@ -2271,6 +3635,156 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#475569',
+  },
+  patientActionDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    gap: 4,
+  },
+  patientActionDeleteText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
+  },
+  // Permission Banners & Badges
+  permissionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+  },
+  permissionBannerAdmin: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  permissionBannerNCV: {
+    backgroundColor: '#F0F9FF',
+    borderColor: '#BAE6FD',
+  },
+  permissionBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  permissionTextAdmin: {
+    color: '#92400E',
+  },
+  permissionTextNCV: {
+    color: '#0369A1',
+  },
+  permissionBannerSub: {
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  permissionSubAdmin: {
+    color: '#B45309',
+  },
+  permissionSubNCV: {
+    color: '#0284C7',
+  },
+  // Creator Filter (Admin)
+  creatorFilterContainer: {
+    marginBottom: 12,
+  },
+  creatorFilterLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+    marginBottom: 6,
+  },
+  creatorFilterScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  creatorPill: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  creatorPillActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0284C7',
+  },
+  creatorPillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  creatorPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  // Creator Badges on Cards
+  myCreatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    gap: 4,
+  },
+  myCreatorBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#059669',
+  },
+  otherCreatorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EEF2FF',
+    paddingVertical: 3,
+    paddingHorizontal: 7,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    gap: 4,
+  },
+  otherCreatorBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#4338CA',
+  },
+  // Creator Form Info Box
+  creatorFormInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  creatorFormInfoTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginBottom: 2,
+  },
+  creatorFormInfoText: {
+    fontSize: 12,
+    color: '#0284C7',
+    lineHeight: 16,
+  },
+  formInputDisabled: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#E2E8F0',
+    color: '#64748B',
   },
   formBackRow: {
     marginBottom: 14,
@@ -2723,5 +4237,368 @@ const styles = StyleSheet.create({
     color: '#64748B',
     marginTop: 6,
     lineHeight: 16,
+  },
+
+  // Calibration Tab Styles
+  calibCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  calibHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  calibDescription: {
+    fontSize: 13,
+    color: '#334155',
+    lineHeight: 19,
+  },
+  calibStepBox: {
+    marginTop: 10,
+    backgroundColor: '#F0F9FF',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  calibStepText: {
+    fontSize: 12,
+    color: '#0369A1',
+    lineHeight: 18,
+  },
+  calibAdjustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 16,
+    marginBottom: 12,
+  },
+  calibAdjustBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  calibAdjustBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  calibValueText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0284C7',
+  },
+  calibSubText: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  calibSecondaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    alignItems: 'center',
+  },
+  calibSecondaryBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  calibSecondaryBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  calibSaveBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#0284C7',
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  calibSaveBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  calibRulerCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibRulerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  calibRulerArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  calibVirtualRuler: {
+    position: 'relative',
+    width: 110,
+    borderRightWidth: 1.5,
+    borderRightColor: '#CBD5E1',
+  },
+  calibTickRow: {
+    position: 'absolute',
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  calibTickLine: {
+    borderRadius: 1,
+  },
+  calibTickText: {
+    fontSize: 9,
+    color: '#64748B',
+    marginLeft: 4,
+  },
+  calibTickTextMajor: {
+    fontWeight: '800',
+    color: '#0F172A',
+    fontSize: 10,
+  },
+  calibVasCol: {
+    alignItems: 'center',
+    paddingHorizontal: 16,
+  },
+  calibStopperTop: {
+    width: 32,
+    height: 3.5,
+    backgroundColor: '#DC2626',
+    borderRadius: 2,
+  },
+  calibStopperBottom: {
+    width: 32,
+    height: 3.5,
+    backgroundColor: '#10B981',
+    borderRadius: 2,
+  },
+  calibVasBar: {
+    width: 14,
+    backgroundColor: '#DC2626',
+    borderRadius: 7,
+  },
+  calibCardRefCol: {
+    width: 90,
+    alignItems: 'center',
+  },
+  calibCardRefBox: {
+    width: 82,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1.5,
+    borderColor: '#0284C7',
+    borderStyle: 'dashed',
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 6,
+  },
+  calibCardRefTitle: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#0369A1',
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  calibCardRefMm: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0284C7',
+    marginTop: 2,
+  },
+  calibCardRefSub: {
+    fontSize: 8,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  calibDiagCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  calibDiagTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  calibDiagRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  calibDiagLabel: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  calibDiagVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1E293B',
+  },
+  patientGroupCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.04,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  patientGroupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  patientGroupLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  patientAvatarBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  patientGroupStudyId: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  patientGroupBadge: {
+    backgroundColor: '#E0F2FE',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  patientGroupBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  patientGroupSub: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  deletePatientGroupBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  patientGroupBody: {
+    backgroundColor: '#F8FAFC',
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    padding: 10,
+    gap: 8,
+  },
+  sessionItem: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  sessionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  sessionIndexText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#334155',
+  },
+  sessionTimepointBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  sessionTimepointText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  sessionMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  sessionDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    gap: 3,
+  },
+  sessionDeleteText: {
+    fontSize: 11,
+    color: '#DC2626',
+    fontWeight: '700',
   },
 });
