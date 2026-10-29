@@ -286,9 +286,11 @@ export const FirebaseService = {
             technical_issue: item.technical_issue ?? null,
           });
         });
-        if (list.length > 0) {
-          return list;
+        await StorageService.clearAllLocalAssessments();
+        for (const a of list) {
+          await StorageService.saveLocalAssessment(a);
         }
+        return list;
       } catch (err: any) {
         console.warn('Không thể load từ Firestore, chuyển sang đọc bộ nhớ máy:', err?.message);
       }
@@ -403,52 +405,44 @@ export const FirebaseService = {
   },
 
   /**
-   * Lấy danh sách hồ sơ bệnh nhân (từ Firestore kết hợp Local cache)
+   * Lấy danh sách hồ sơ bệnh nhân từ cơ sở dữ liệu
    * Phân quyền:
    * - Nếu là Admin hoặc chưa truyền user: Xem được toàn bộ hồ sơ
    * - Nếu là NCV: Chỉ xem được hồ sơ do chính mình tạo (patient.created_by === currentUser.id)
    */
   async getAllPatients(currentUser?: AppUser | null): Promise<Patient[]> {
-    const localPatients = await StorageService.getLocalPatients();
-    let allPatients = localPatients;
+    let allPatients: Patient[] = [];
 
     if (db) {
       try {
         const q = query(collection(db, PATIENTS_COLLECTION));
         const querySnapshot = await getDocs(q);
-        const remoteMap = new Map<string, Patient>();
+        const remotePatients: Patient[] = [];
         querySnapshot.forEach((docSnapshot) => {
           const p = docSnapshot.data() as Patient;
           if (p && p.study_id) {
-            remoteMap.set(p.study_id.toUpperCase(), p);
+            remotePatients.push(p);
           }
         });
 
-        if (remoteMap.size > 0) {
-          const mergedMap = new Map<string, Patient>();
-          localPatients.forEach((p) => mergedMap.set(p.study_id.toUpperCase(), p));
-          remoteMap.forEach((v, k) => mergedMap.set(k, v));
-          allPatients = Array.from(mergedMap.values());
-        }
+        allPatients = remotePatients;
+        // Cập nhật bộ nhớ đệm máy đồng bộ hoàn toàn với cơ sở dữ liệu
+        await StorageService.saveAllLocalPatients(allPatients);
       } catch (err: any) {
         console.warn('Không thể load Patients từ Firestore, chuyển sang đọc bộ nhớ máy:', err?.message);
+        allPatients = await StorageService.getLocalPatients();
       }
+    } else {
+      allPatients = await StorageService.getLocalPatients();
     }
 
     // Đảm bảo mọi bệnh nhân đều có thông tin người tạo (fallback)
     const normalizedList = allPatients.map((p) => {
       if (!p.created_by) {
-        if (p.study_id.toUpperCase() === 'CS002') {
-          return {
-            ...p,
-            created_by: 'ncv-01',
-            created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
-          };
-        }
         return {
           ...p,
           created_by: 'admin-01',
-          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
+          created_by_name: 'Quản trị viên Đề tài',
         };
       }
       return p;

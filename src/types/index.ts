@@ -141,6 +141,7 @@ export interface Assessment {
   app_version: string;
   save_status: SaveStatus;
   error_code?: string | null;
+  is_primary_assessment?: boolean; // Đánh giá chính thức của mốc T
 }
 
 export type AssessmentFlowStep =

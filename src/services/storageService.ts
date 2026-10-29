@@ -198,73 +198,21 @@ export const StorageService = {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.PATIENTS);
       if (data) {
         const parsed: Patient[] = JSON.parse(data);
-        // Migration: Gán người tạo cho các bản ghi cũ chưa có thông tin created_by
-        let hasChanges = false;
-        const migrated = parsed.map((p) => {
-          if (!p.created_by) {
-            hasChanges = true;
-            if (p.study_id.toUpperCase() === 'CS002') {
-              return {
-                ...p,
-                created_by: 'ncv-01',
-                created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
-              };
-            }
-            return {
-              ...p,
-              created_by: 'admin-01',
-              created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
-            };
-          }
-          return p;
-        });
-
-        if (hasChanges) {
-          await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(migrated));
+        // Lọc bỏ các bản ghi mẫu mặc định ban đầu nếu còn trong bộ nhớ máy
+        const filtered = parsed.filter(
+          (p) =>
+            !(
+              (p.study_id === 'CS001' && p.para === '1001' && p.anesthesia_method === 'Tê tủy sống') ||
+              (p.study_id === 'CS002' && p.para === '2002' && p.anesthesia_method === 'Tê tủy sống') ||
+              (p.study_id === 'CS003' && p.para === '0000' && p.anesthesia_method === 'Mê nội khí quản')
+            )
+        );
+        if (filtered.length !== parsed.length) {
+          await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(filtered));
         }
-        return migrated;
+        return filtered;
       }
-      // Dữ liệu ban đầu mặc định đã đăng ký trong đề cương
-      const initialList: Patient[] = [
-        {
-          study_id: 'CS001',
-          age: 28,
-          para: '1001',
-          anesthesia_method: 'Tê tủy sống',
-          analgesia_drugs: 'Morphin tủy sống + Paracetamol',
-          surgery_group: 'Mổ lấy thai',
-          care_location: 'Khoa hậu phẫu',
-          created_at: new Date().toISOString(),
-          created_by: 'admin-01',
-          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
-        },
-        {
-          study_id: 'CS002',
-          age: 32,
-          para: '2002',
-          anesthesia_method: 'Tê tủy sống',
-          analgesia_drugs: 'Sufentanil + Paracetamol',
-          surgery_group: 'Mổ lấy thai',
-          care_location: 'Khoa sản / buồng bệnh',
-          created_at: new Date().toISOString(),
-          created_by: 'ncv-01',
-          created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
-        },
-        {
-          study_id: 'CS003',
-          age: 25,
-          para: '0000',
-          anesthesia_method: 'Mê nội khí quản',
-          analgesia_drugs: 'PCA Fentanyl',
-          surgery_group: 'Phẫu thuật phụ khoa đường bụng',
-          care_location: 'Phòng hồi tỉnh (PACU)',
-          created_at: new Date().toISOString(),
-          created_by: 'admin-01',
-          created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
-        },
-      ];
-      await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(initialList));
-      return initialList;
+      return [];
     } catch (e) {
       console.error('Error reading local patients:', e);
       return [];
