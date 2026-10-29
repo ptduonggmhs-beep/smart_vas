@@ -1,14 +1,19 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Assessment, Patient, ResearcherAccount } from '../types';
+import { Assessment, Patient, ResearcherAccount, ClinicalConfig, PatientEpisode, TimepointConfigItem } from '../types';
+import { DEFAULT_CLINICAL_CONFIG } from '../config/clinicalConfig';
+import { DEFAULT_CLINICAL_TIMEPOINTS } from '../config/timepointConfig';
 
 const STORAGE_KEYS = {
   ASSESSMENTS: '@smart_vas_assessments',
   PATIENTS: '@smart_vas_patients',
   RESEARCHERS: '@smart_vas_researchers',
+  EPISODES: '@smart_vas_episodes',
   CURRENT_TIMEPOINT: '@smart_vas_current_timepoint',
   CURRENT_ASSISTANCE: '@smart_vas_current_assistance',
   CUSTOM_FIREBASE_KEY: '@smart_vas_custom_firebase_key',
   CACHED_PATIENT_STUDY_ID: '@smart_vas_cached_patient_study_id',
+  CLINICAL_CONFIG: '@smart_vas_clinical_config',
+  DOCTOR_TIMEPOINTS: '@smart_vas_doctor_timepoints',
 };
 
 export const INITIAL_SEED_RESEARCHERS: ResearcherAccount[] = [
@@ -36,13 +41,54 @@ export const INITIAL_SEED_RESEARCHERS: ResearcherAccount[] = [
   },
 ];
 
-
 export const StorageService = {
   // --- Assessments ---
   async getLocalAssessments(): Promise<Assessment[]> {
     try {
       const data = await AsyncStorage.getItem(STORAGE_KEYS.ASSESSMENTS);
-      return data ? JSON.parse(data) : [];
+      if (!data) return [];
+      const parsed: any[] = JSON.parse(data);
+
+      let hasChanges = false;
+      const migrated: Assessment[] = parsed.map((item) => {
+        // Migration schema:
+        // 1. pain_context 'van_dong' -> 'hoat_dong'
+        let painContext = item.pain_context;
+        if (painContext === 'van_dong') {
+          painContext = 'hoat_dong';
+          hasChanges = true;
+        }
+
+        // 2. Bổ sung các trường mới nếu bản ghi cũ chưa có
+        const normalized: Assessment = {
+          ...item,
+          pain_context: painContext,
+          activity_name: item.activity_name ?? null,
+          activity_timing: item.activity_timing ?? null,
+          surgery_group: item.surgery_group ?? null,
+          care_location: item.care_location ?? null,
+          completion_status: item.completion_status || 'completed',
+          reason_not_completed: item.reason_not_completed ?? null,
+          technical_issue: item.technical_issue ?? null,
+          eVAS_score: typeof item.eVAS_score === 'number' ? item.eVAS_score : (item.completion_status === 'not_completed' ? null : 0),
+        };
+
+        if (
+          item.activity_name === undefined ||
+          item.surgery_group === undefined ||
+          item.care_location === undefined
+        ) {
+          hasChanges = true;
+        }
+
+        return normalized;
+      });
+
+      if (hasChanges) {
+        await AsyncStorage.setItem(STORAGE_KEYS.ASSESSMENTS, JSON.stringify(migrated));
+      }
+
+      return migrated;
     } catch (e) {
       console.error('Error reading local assessments:', e);
       return [];
@@ -52,12 +98,49 @@ export const StorageService = {
   async saveLocalAssessment(assessment: Assessment): Promise<void> {
     try {
       const list = await this.getLocalAssessments();
+      const patientCode = (assessment.patient_code || assessment.study_id).trim().toUpperCase();
+      const actualTime = assessment.actual_timestamp || assessment.submit_timestamp || new Date().toISOString();
+
+      // Đảm bảo các trường tiêu chuẩn của Phần 7 luôn đầy đủ
+      const normalizedAssessment: Assessment = {
+        ...assessment,
+        study_id: patientCode,
+        patient_code: patientCode,
+        record_id: assessment.record_id || assessment.assessment_id,
+        assessment_id: assessment.record_id || assessment.assessment_id,
+        selected_timepoint: assessment.selected_timepoint || assessment.timepoint_label || (assessment.assessment_timepoint as string) || null,
+        assessment_order: assessment.assessment_order ?? 1,
+        t0_timestamp: assessment.t0_timestamp || null,
+        vas_score: assessment.vas_score !== undefined ? assessment.vas_score : assessment.eVAS_score,
+        eVAS_score: assessment.vas_score !== undefined ? assessment.vas_score : assessment.eVAS_score,
+        actual_timestamp: actualTime,
+        submit_timestamp: actualTime,
+        timezone: assessment.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Ho_Chi_Minh',
+        elapsed_minutes_from_T0: assessment.elapsed_minutes_from_T0,
+        timepoint_label: assessment.timepoint_label || (assessment.selected_timepoint as string) || (assessment.assessment_timepoint as string) || 'T1',
+        planned_timepoint: assessment.planned_timepoint ?? (assessment.selected_timepoint as string) ?? (assessment.assessment_timepoint as string),
+        timepoint_status: assessment.timepoint_status || (assessment.timepoint_label === 'T0' ? 'BASELINE' : 'ON_TIME'),
+        is_early: assessment.is_early ?? false,
+      };
+
+      // Nếu lần đánh giá hoàn thành đầu tiên được lưu thành công (BASELINE/T0), tạo hoặc kích hoạt Episode
+      if (
+        normalizedAssessment.completion_status === 'completed' &&
+        (normalizedAssessment.timepoint_status === 'BASELINE' || normalizedAssessment.timepoint_label === 'T0')
+      ) {
+        let activeEp = await this.getActiveEpisode(patientCode);
+        if (!activeEp) {
+          activeEp = await this.createEpisode(patientCode, actualTime);
+        }
+        normalizedAssessment.episode_id = activeEp.episode_id;
+      }
+
       // Replace if existing assessment_id or prepend new
-      const index = list.findIndex(a => a.assessment_id === assessment.assessment_id);
+      const index = list.findIndex(a => a.assessment_id === normalizedAssessment.assessment_id);
       if (index >= 0) {
-        list[index] = assessment;
+        list[index] = normalizedAssessment;
       } else {
-        list.unshift(assessment);
+        list.unshift(normalizedAssessment);
       }
       await AsyncStorage.setItem(STORAGE_KEYS.ASSESSMENTS, JSON.stringify(list));
     } catch (e) {
@@ -79,6 +162,35 @@ export const StorageService = {
       console.error('Error updating assessment status:', e);
     }
   },
+
+  async deleteLocalAssessment(assessmentId: string): Promise<void> {
+    try {
+      const list = await this.getLocalAssessments();
+      const filtered = list.filter(a => a.assessment_id !== assessmentId);
+      await AsyncStorage.setItem(STORAGE_KEYS.ASSESSMENTS, JSON.stringify(filtered));
+    } catch (e) {
+      console.error('Error deleting local assessment:', e);
+    }
+  },
+
+  async deleteLocalAssessmentsByPatient(studyId: string): Promise<void> {
+    try {
+      const list = await this.getLocalAssessments();
+      const filtered = list.filter(a => a.study_id.toUpperCase() !== studyId.trim().toUpperCase());
+      await AsyncStorage.setItem(STORAGE_KEYS.ASSESSMENTS, JSON.stringify(filtered));
+    } catch (e) {
+      console.error('Error deleting local assessments by patient:', e);
+    }
+  },
+
+  async clearAllLocalAssessments(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEYS.ASSESSMENTS);
+    } catch (e) {
+      console.error('Error clearing local assessments:', e);
+    }
+  },
+
 
   // --- Patients ---
   async getLocalPatients(): Promise<Patient[]> {
@@ -120,6 +232,8 @@ export const StorageService = {
           para: '1001',
           anesthesia_method: 'Tê tủy sống',
           analgesia_drugs: 'Morphin tủy sống + Paracetamol',
+          surgery_group: 'Mổ lấy thai',
+          care_location: 'Khoa hậu phẫu',
           created_at: new Date().toISOString(),
           created_by: 'admin-01',
           created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
@@ -130,6 +244,8 @@ export const StorageService = {
           para: '2002',
           anesthesia_method: 'Tê tủy sống',
           analgesia_drugs: 'Sufentanil + Paracetamol',
+          surgery_group: 'Mổ lấy thai',
+          care_location: 'Khoa sản / buồng bệnh',
           created_at: new Date().toISOString(),
           created_by: 'ncv-01',
           created_by_name: 'BS. Nghiên cứu viên Lâm sàng',
@@ -140,6 +256,8 @@ export const StorageService = {
           para: '0000',
           anesthesia_method: 'Mê nội khí quản',
           analgesia_drugs: 'PCA Fentanyl',
+          surgery_group: 'Phẫu thuật phụ khoa đường bụng',
+          care_location: 'Phòng hồi tỉnh (PACU)',
           created_at: new Date().toISOString(),
           created_by: 'admin-01',
           created_by_name: 'PGS. TS. Chủ nhiệm Đề tài',
@@ -250,6 +368,55 @@ export const StorageService = {
     return list.find(r => r.email.toLowerCase().trim() === email.toLowerCase().trim() && r.is_active !== false);
   },
 
+  // --- Clinical Configurations ---
+  async getClinicalConfig(): Promise<ClinicalConfig> {
+    try {
+      const data = await AsyncStorage.getItem(STORAGE_KEYS.CLINICAL_CONFIG);
+      if (data) {
+        const parsed = JSON.parse(data);
+        return {
+          ...DEFAULT_CLINICAL_CONFIG,
+          ...parsed,
+        };
+      }
+    } catch (e) {
+      console.warn('Lỗi đọc cấu hình lâm sàng từ storage, dùng cấu hình mặc định:', e);
+    }
+    return DEFAULT_CLINICAL_CONFIG;
+  },
+
+  async saveClinicalConfig(config: ClinicalConfig): Promise<void> {
+    try {
+      const toSave: ClinicalConfig = {
+        ...config,
+        updated_at: new Date().toISOString(),
+      };
+      await AsyncStorage.setItem(STORAGE_KEYS.CLINICAL_CONFIG, JSON.stringify(toSave));
+    } catch (e) {
+      console.error('Lỗi lưu cấu hình lâm sàng:', e);
+    }
+  },
+
+  // --- Doctor Custom Timepoints (Các mốc T do bác sĩ thiết lập) ---
+  async getDoctorCustomTimepoints(): Promise<TimepointConfigItem[]> {
+    try {
+      const data = await AsyncStorage.getItem(STORAGE_KEYS.DOCTOR_TIMEPOINTS);
+      if (data) {
+        return JSON.parse(data);
+      }
+    } catch (e) {
+      console.warn('Lỗi đọc mốc T tùy chỉnh từ bộ nhớ:', e);
+    }
+    return DEFAULT_CLINICAL_TIMEPOINTS;
+  },
+
+  async saveDoctorCustomTimepoints(timepoints: TimepointConfigItem[]): Promise<void> {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.DOCTOR_TIMEPOINTS, JSON.stringify(timepoints));
+    } catch (e) {
+      console.error('Lỗi lưu mốc T tùy chỉnh:', e);
+    }
+  },
 
   // --- Settings & Meta ---
   async getSetting(key: string, defaultValue: string = ''): Promise<string> {
@@ -307,6 +474,97 @@ export const StorageService = {
       await AsyncStorage.removeItem(STORAGE_KEYS.CACHED_PATIENT_STUDY_ID);
     } catch (e) {
       console.error('Error removing cached study ID:', e);
+    }
+  },
+
+  // --- Episodes (Đợt theo dõi T0/Tn) ---
+  async getAllEpisodes(): Promise<PatientEpisode[]> {
+    try {
+      const data = await AsyncStorage.getItem(STORAGE_KEYS.EPISODES);
+      return data ? JSON.parse(data) : [];
+    } catch {
+      return [];
+    }
+  },
+
+  async getActiveEpisode(patientCode: string): Promise<PatientEpisode | null> {
+    try {
+      const normalizedCode = patientCode.trim().toUpperCase();
+      const episodes = await this.getAllEpisodes();
+      const active = episodes.find(e => e.patient_code === normalizedCode && e.is_active);
+      if (active) return active;
+
+      // Fallback: Tìm từ các đánh giá đã lưu nếu chưa có trong episodes table
+      const assessments = await this.getLocalAssessments();
+      const patientAssessments = assessments.filter(
+        a => a.study_id.toUpperCase() === normalizedCode && a.completion_status === 'completed'
+      );
+      // Tìm bản ghi BASELINE hoặc T0 sớm nhất
+      const t0Assessment = patientAssessments.find(
+        a => a.timepoint_status === 'BASELINE' || a.timepoint_label === 'T0'
+      ) || (patientAssessments.length > 0 ? patientAssessments[patientAssessments.length - 1] : null);
+
+      if (t0Assessment) {
+        const episode: PatientEpisode = {
+          episode_id: t0Assessment.episode_id || `EP_${normalizedCode}_${new Date(t0Assessment.submit_timestamp).getTime()}`,
+          patient_code: normalizedCode,
+          t0_timestamp: t0Assessment.actual_timestamp || t0Assessment.submit_timestamp,
+          created_at: t0Assessment.submit_timestamp,
+          is_active: true,
+        };
+        await this.saveEpisode(episode);
+        return episode;
+      }
+
+      return null;
+    } catch (e) {
+      console.error('Error getting active episode:', e);
+      return null;
+    }
+  },
+
+  async saveEpisode(episode: PatientEpisode): Promise<void> {
+    try {
+      const episodes = await this.getAllEpisodes();
+      const index = episodes.findIndex(e => e.episode_id === episode.episode_id);
+      if (index >= 0) {
+        episodes[index] = episode;
+      } else {
+        episodes.unshift(episode);
+      }
+      await AsyncStorage.setItem(STORAGE_KEYS.EPISODES, JSON.stringify(episodes));
+    } catch (e) {
+      console.error('Error saving episode:', e);
+    }
+  },
+
+  async createEpisode(patientCode: string, t0Timestamp: string): Promise<PatientEpisode> {
+    const normalizedCode = patientCode.trim().toUpperCase();
+    const episodeId = `EP_${normalizedCode}_${Date.now()}`;
+    const newEpisode: PatientEpisode = {
+      episode_id: episodeId,
+      patient_code: normalizedCode,
+      t0_timestamp: t0Timestamp,
+      created_at: new Date().toISOString(),
+      is_active: true,
+    };
+    await this.saveEpisode(newEpisode);
+    return newEpisode;
+  },
+
+  async deactivateActiveEpisode(patientCode: string): Promise<void> {
+    try {
+      const normalizedCode = patientCode.trim().toUpperCase();
+      const episodes = await this.getAllEpisodes();
+      const updated = episodes.map(e => {
+        if (e.patient_code === normalizedCode && e.is_active) {
+          return { ...e, is_active: false };
+        }
+        return e;
+      });
+      await AsyncStorage.setItem(STORAGE_KEYS.EPISODES, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Error deactivating episode:', e);
     }
   },
 };

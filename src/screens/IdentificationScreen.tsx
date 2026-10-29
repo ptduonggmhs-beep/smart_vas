@@ -12,14 +12,14 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { TimePoint, AssistanceStatus, AppUser } from '../types';
+import { AppUser } from '../types';
 import { StorageService } from '../services/storageService';
 import { FirebaseService } from '../services/firebaseService';
 
 interface IdentificationScreenProps {
-  onStart: (studyId: string, timepoint: TimePoint, assistance: AssistanceStatus) => void;
+  onStart: (patientCode: string) => void;
   onOpenResearcher: () => void;
-  onOpenHistory?: (studyId: string) => void;
+  onOpenHistory?: (patientCode: string) => void;
   currentUser?: AppUser | null;
 }
 
@@ -29,114 +29,53 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
   onOpenHistory,
   currentUser,
 }) => {
-  const [studyId, setStudyId] = useState<string>('');
-  const [savedStudyId, setSavedStudyId] = useState<string>('');
-  const [isUsingSavedId, setIsUsingSavedId] = useState<boolean>(false);
+  const [patientCode, setPatientCode] = useState<string>('');
+  const [savedPatientCode, setSavedPatientCode] = useState<string>('');
   const [isLoadingCache, setIsLoadingCache] = useState<boolean>(true);
   const [isValidating, setIsValidating] = useState<boolean>(false);
-  const [isCheckingCode, setIsCheckingCode] = useState<boolean>(false);
 
-  const selectedTimepoint: TimePoint = 'T1';
-  const assistance: AssistanceStatus = 'assisted';
-
-  // Đọc mã người tham gia đã lưu cache trước đó
+  // Đọc mã đã lưu trong bộ nhớ máy nếu có
   useEffect(() => {
     StorageService.getCachedPatientStudyId().then((cached) => {
       if (cached) {
-        setStudyId(cached);
-        setSavedStudyId(cached);
-        setIsUsingSavedId(true);
+        setPatientCode(cached);
+        setSavedPatientCode(cached);
       }
       setIsLoadingCache(false);
     });
   }, []);
 
-  // Nút kiểm tra và lưu mã người tham gia
-  const handleCheckAndSaveCode = async () => {
-    const trimmed = studyId.trim().toUpperCase();
+  const handleContinue = async () => {
+    const trimmed = patientCode.trim().toUpperCase();
     if (!trimmed) {
-      Alert.alert(
-        'Chưa nhập mã',
-        'Vui lòng nhập Mã người tham gia do nhân viên y tế cấp trước khi kiểm tra.'
-      );
-      return;
-    }
-
-    setIsCheckingCode(true);
-
-    try {
-      const existingPatient = await FirebaseService.getPatient(trimmed);
-
-      if (!existingPatient) {
-        setIsCheckingCode(false);
-        Alert.alert(
-          '⚠️ Mã không tồn tại',
-          `Mã người tham gia "${trimmed}" chưa tồn tại trong danh sách nghiên cứu của khoa.\n\nChị vui lòng kiểm tra lại mã trên thẻ/vòng tay hoặc liên hệ Nghiên cứu viên (NCV) để được cấp mã.`,
-          [{ text: 'Đã hiểu', style: 'default' }]
-        );
-        return;
-      }
-
-      // Lưu mã hợp lệ vào bộ nhớ cache của máy và chuyển ngay sang giao diện đã lưu
-      await StorageService.setCachedPatientStudyId(trimmed);
-      setSavedStudyId(trimmed);
-      setStudyId(trimmed);
-      setIsUsingSavedId(true);
-      setIsCheckingCode(false);
-    } catch {
-      setIsCheckingCode(false);
-      Alert.alert('Lỗi kiểm tra', 'Không thể xác thực mã người tham gia. Vui lòng thử lại.');
-    }
-  };
-
-  const handleStart = async () => {
-    const targetId = isUsingSavedId && savedStudyId ? savedStudyId : studyId;
-    const trimmed = targetId.trim().toUpperCase();
-    if (!trimmed) {
-      Alert.alert(
-        'Chưa có mã',
-        'Vui lòng nhập Mã người tham gia do nhân viên y tế cấp (trên vòng tay hoặc hồ sơ).'
-      );
+      Alert.alert('Chưa nhập mã', 'Vui lòng nhập Mã bệnh nhân trước khi tiếp tục.');
       return;
     }
 
     setIsValidating(true);
-
     try {
-      // 1. KIỂM TRA MÃ CÓ TỒN TẠI TRONG CƠ SỞ DỮ LIỆU ĐỀ TÀI HAY KHÔNG
-      const existingPatient = await FirebaseService.getPatient(trimmed);
+      // Lưu vào cache để sử dụng lại thuận tiện
+      await StorageService.setCachedPatientStudyId(trimmed);
 
+      // Đảm bảo hồ sơ bệnh nhân tồn tại hoặc khởi tạo mới trong CSDL
+      const existingPatient = await FirebaseService.getPatient(trimmed);
       if (!existingPatient) {
-        setIsValidating(false);
-        Alert.alert(
-          '⚠️ Mã không tồn tại',
-          `Mã người tham gia "${trimmed}" chưa tồn tại trong danh sách nghiên cứu của khoa.\n\nChị vui lòng kiểm tra lại mã trên thẻ/vòng tay hoặc liên hệ Nghiên cứu viên (NCV) để được cấp mã trước khi bắt đầu.`,
-          [{ text: 'Đã hiểu', style: 'default' }]
-        );
-        return; // DỪNG VIỆC ĐÁNH GIÁ NGAY LẬP TỨC
+        // Tự động tạo hồ sơ bệnh nhân tối thiểu theo mã nếu chưa có
+        await FirebaseService.savePatient({
+          study_id: trimmed,
+          created_at: new Date().toISOString(),
+          created_by: currentUser?.id || 'app-operator',
+          created_by_name: currentUser?.name || 'Nhân viên y tế',
+        });
       }
 
-      // 2. MÃ HỢP LỆ VÀ ĐÃ TỒN TẠI -> LƯU VÀO BỘ NHỚ VÀ TIẾP TỤC ĐÁNH GIÁ
-      await StorageService.setCachedPatientStudyId(trimmed);
-      setSavedStudyId(trimmed);
-      setStudyId(trimmed);
-      setIsUsingSavedId(true);
       setIsValidating(false);
-
-      onStart(trimmed, selectedTimepoint, assistance);
+      onStart(trimmed);
     } catch {
       setIsValidating(false);
-      Alert.alert('Lỗi kiểm tra', 'Không thể xác thực mã người tham gia. Vui lòng thử lại.');
+      // Nếu ngoại tuyến vẫn cho phép tiếp tục đánh giá
+      onStart(trimmed);
     }
-  };
-
-  const handleSwitchToManualInput = () => {
-    setIsUsingSavedId(false);
-  };
-
-  const handleUseSavedId = () => {
-    setStudyId(savedStudyId);
-    setIsUsingSavedId(true);
   };
 
   return (
@@ -149,7 +88,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
         <View style={styles.topBar}>
           <View style={styles.hospitalBadge}>
             <Ionicons name="medical" size={16} color="#0284C7" />
-            <Text style={styles.hospitalText}>Khoa Phụ Sản • Hệ thống eVAS</Text>
+            <Text style={styles.hospitalText}>Hệ thống eVAS • Ghi nhận đau sau mổ</Text>
           </View>
 
           <TouchableOpacity
@@ -159,7 +98,7 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
           >
             <Ionicons
               name={currentUser ? 'shield-checkmark' : 'lock-closed-outline'}
-              size={16}
+              size={15}
               color={currentUser ? '#0284C7' : '#64748B'}
             />
             <Text style={[styles.ncvButtonText, currentUser && styles.ncvButtonTextActive]}>
@@ -168,154 +107,78 @@ export const IdentificationScreen: React.FC<IdentificationScreenProps> = ({
           </TouchableOpacity>
         </View>
 
-        {/* Title & Introduction */}
+        {/* Header & Step Indicator */}
         <View style={styles.headerSection}>
-          <Text style={styles.screenTitle}>Bắt đầu đánh giá</Text>
-          <Text style={styles.subTitle}>Đánh giá đau sau mổ</Text>
+          <View style={styles.stepBadge}>
+            <Text style={styles.stepIndicatorText}>Bước 1/2 • Nhập mã bệnh nhân</Text>
+          </View>
+          <Text style={styles.screenTitle}>Bắt đầu lượt đánh giá</Text>
           <Text style={styles.description}>
-            Chị hãy cho biết mức độ đau của mình tại thời điểm hiện tại.
+            Ứng dụng ghi nhận mức độ đau sau phẫu thuật theo quy chuẩn thang đo VAS điện tử.
           </Text>
         </View>
 
-        {/* --- KHU VỰC MÃ NGƯỜI THAM GIA (CÓ CACHE GỢI Ý & XEM LỊCH SỬ) --- */}
-        {isLoadingCache ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-          </View>
-        ) : isUsingSavedId && savedStudyId ? (
-          /* TRƯỜNG HỢP 1: ĐÃ CÓ MÃ LƯU TRONG BỘ NHỚ -> HIỂN THỊ GỢI Ý & NÚT XEM LỊCH SỬ */
-          <View style={styles.savedIdCard}>
-            <View style={styles.savedIdHeaderRow}>
-              <View style={styles.savedIconCircle}>
-                <Ionicons name="person" size={24} color="#0284C7" />
-              </View>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.savedIdPrompt}>Mã người tham gia của chị:</Text>
-                <Text style={styles.savedIdText}>{savedStudyId}</Text>
-              </View>
-              <View style={styles.savedBadgeTag}>
-                <Ionicons name="checkmark-circle" size={14} color="#059669" />
-                <Text style={styles.savedBadgeText}>Đã ghi nhớ</Text>
-              </View>
-            </View>
+        {/* Khung nhập mã bệnh nhân tinh gọn */}
+        <View style={styles.card}>
+          <Text style={styles.inputLabel}>Mã bệnh nhân</Text>
 
-            <View style={styles.savedIdDivider} />
-
-            <View style={styles.savedActionsRow}>
-              {onOpenHistory && (
-                <TouchableOpacity
-                  style={styles.historyLinkButton}
-                  onPress={() => onOpenHistory(savedStudyId)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="time-outline" size={16} color="#0284C7" />
-                  <Text style={styles.historyLinkText}>Xem lịch sử đánh giá</Text>
-                </TouchableOpacity>
-              )}
-
-              <TouchableOpacity
-                style={styles.changeIdButton}
-                onPress={handleSwitchToManualInput}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="create-outline" size={16} color="#64748B" />
-                <Text style={styles.changeIdText}>Đổi mã</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          /* TRƯỜNG HỢP 2: CHƯA CÓ MÃ HOẶC MUỐN NHẬP / ĐỔI MÃ MỚI */
-          <View style={styles.card}>
-            <Text style={styles.inputLabel}>
-              {savedStudyId ? 'Đổi mã người tham gia:' : 'Nhập mã người tham gia (do NCV cấp):'}
-            </Text>
+          {isLoadingCache ? (
+            <ActivityIndicator size="small" color="#0284C7" style={{ marginVertical: 16 }} />
+          ) : (
             <View style={styles.inputContainer}>
-              <Ionicons name="barcode-outline" size={26} color="#0284C7" style={styles.inputIcon} />
+              <Ionicons name="barcode-outline" size={24} color="#0284C7" style={styles.inputIcon} />
               <TextInput
                 style={styles.textInput}
-                value={studyId}
-                onChangeText={(text) => setStudyId(text.toUpperCase())}
+                value={patientCode}
+                onChangeText={(text) => setPatientCode(text.toUpperCase())}
                 placeholder="VD: CS001"
                 placeholderTextColor="#94A3B8"
                 autoCapitalize="characters"
                 autoCorrect={false}
-                maxLength={12}
-                autoFocus={true}
+                maxLength={16}
+                autoFocus={!savedPatientCode}
               />
-              {studyId.length > 0 && (
-                <TouchableOpacity onPress={() => setStudyId('')} style={styles.clearBtn}>
+              {patientCode.length > 0 && (
+                <TouchableOpacity onPress={() => setPatientCode('')} style={styles.clearBtn}>
                   <Ionicons name="close-circle" size={20} color="#94A3B8" />
                 </TouchableOpacity>
               )}
             </View>
+          )}
 
-            {/* Nút check để kiểm tra và lưu mã */}
+          {/* Nút xem lịch sử nếu có mã */}
+          {savedPatientCode && onOpenHistory && (
             <TouchableOpacity
-              style={[
-                styles.checkCodeButton,
-                (!studyId.trim() || isCheckingCode) && styles.checkCodeButtonDisabled,
-              ]}
-              onPress={handleCheckAndSaveCode}
-              disabled={!studyId.trim() || isCheckingCode}
-              activeOpacity={0.8}
+              style={styles.historyLinkRow}
+              onPress={() => onOpenHistory(patientCode || savedPatientCode)}
+              activeOpacity={0.7}
             >
-              {isCheckingCode ? (
-                <View style={styles.checkButtonInner}>
-                  <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 8 }} />
-                  <Text style={styles.checkCodeButtonText}>Đang xác thực mã...</Text>
-                </View>
-              ) : (
-                <View style={styles.checkButtonInner}>
-                  <Ionicons name="shield-checkmark" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                  <Text style={styles.checkCodeButtonText}>Kiểm tra & Lưu mã</Text>
-                </View>
-              )}
+              <Ionicons name="time-outline" size={15} color="#0284C7" />
+              <Text style={styles.historyLinkText}>Xem lịch sử đánh giá của bệnh nhân này</Text>
             </TouchableOpacity>
+          )}
+        </View>
 
-            {savedStudyId ? (
-              <TouchableOpacity
-                style={styles.revertSavedBtn}
-                onPress={handleUseSavedId}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="arrow-undo-outline" size={14} color="#0284C7" />
-                <Text style={styles.revertSavedText}>
-                  Hủy đổi mã, dùng lại ({savedStudyId})
-                </Text>
-              </TouchableOpacity>
-            ) : (
-              <Text style={styles.inputHelpText}>
-                * Chị chỉ cần nhập mã một lần và bấm {'"Kiểm tra & Lưu mã"'}. Ứng dụng sẽ ghi nhớ mã này cho các lần đánh giá tiếp theo.
-              </Text>
-            )}
-          </View>
-        )}
-
-
-        {/* Bottom CTA Button */}
+        {/* Nút Tiếp tục sang Bước 2/2 */}
         <View style={styles.bottomSection}>
           <TouchableOpacity
-            style={[styles.primaryButton, isValidating && styles.buttonDisabled]}
-            onPress={handleStart}
-            disabled={isValidating}
+            style={[styles.primaryButton, (!patientCode.trim() || isValidating) && styles.buttonDisabled]}
+            onPress={handleContinue}
+            disabled={!patientCode.trim() || isValidating}
             activeOpacity={0.85}
           >
             {isValidating ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
               <>
-                <Text style={styles.primaryButtonText}>
-                  {isUsingSavedId && savedStudyId
-                    ? `Bắt đầu đánh giá (Mã ${savedStudyId})`
-                    : 'Bắt đầu đánh giá'}
-                </Text>
-                <Ionicons name="arrow-forward" size={22} color="#FFFFFF" style={styles.btnIcon} />
+                <Text style={styles.primaryButtonText}>Tiếp tục</Text>
+                <Ionicons name="arrow-forward" size={20} color="#FFFFFF" style={styles.btnIcon} />
               </>
             )}
           </TouchableOpacity>
 
           <Text style={styles.privacyNote}>
-            * Ứng dụng chỉ ghi nhận Mã người tham gia. Tuyệt đối không lưu họ tên hay số điện thoại để bảo mật danh tính.
+            * Thời điểm đánh giá đầu tiên sẽ được tự động ghi nhận là T0 sau khi lưu kết quả.
           </Text>
         </View>
       </ScrollView>
@@ -329,8 +192,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
   },
   scrollContent: {
-    padding: 24,
-    paddingTop: 16,
+    padding: 18,
     flexGrow: 1,
     justifyContent: 'space-between',
   },
@@ -338,62 +200,43 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   hospitalBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#E0F2FE',
+    backgroundColor: '#F0F9FF',
     paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
   },
   hospitalText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     color: '#0369A1',
     marginLeft: 6,
   },
-  topActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  historyTopBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E0F2FE',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    gap: 4,
-  },
-  historyTopBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
   ncvButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
     paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
+    paddingHorizontal: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: '#E2E8F0',
+    gap: 4,
   },
   ncvButtonActive: {
-    backgroundColor: '#E0F2FE',
     borderColor: '#BAE6FD',
+    backgroundColor: '#F0F9FF',
   },
   ncvButtonText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
-    color: '#475569',
-    marginLeft: 4,
+    color: '#64748B',
   },
   ncvButtonTextActive: {
     color: '#0284C7',
@@ -401,145 +244,49 @@ const styles = StyleSheet.create({
   },
   headerSection: {
     marginBottom: 20,
-    alignItems: 'center',
+  },
+  stepBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#E0F2FE',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+    marginBottom: 8,
+  },
+  stepIndicatorText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
   },
   screenTitle: {
-    fontSize: 26,
+    fontSize: 22,
     fontWeight: '800',
     color: '#0F172A',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  subTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#0284C7',
-    marginBottom: 8,
-    textAlign: 'center',
+    marginBottom: 6,
   },
   description: {
-    fontSize: 15,
-    color: '#475569',
-    textAlign: 'center',
-    lineHeight: 22,
-    paddingHorizontal: 16,
-  },
-  loadingBox: {
-    padding: 30,
-    alignItems: 'center',
-  },
-
-  // Saved ID Card (Gợi ý mã đã lưu)
-  savedIdCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 18,
-    borderWidth: 2,
-    borderColor: '#BAE6FD',
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  savedIdHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  savedIconCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#E0F2FE',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  savedIdPrompt: {
     fontSize: 13,
     color: '#64748B',
-    fontWeight: '500',
+    lineHeight: 18,
   },
-  savedIdText: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: '#0284C7',
-    letterSpacing: 1.5,
-    marginTop: 2,
-  },
-  savedBadgeTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    gap: 4,
-  },
-  savedBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#059669',
-  },
-  savedIdDivider: {
-    height: 1,
-    backgroundColor: '#F1F5F9',
-    marginVertical: 14,
-  },
-  savedActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  historyLinkButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E0F2FE',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    gap: 6,
-  },
-  historyLinkText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  changeIdButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    gap: 4,
-  },
-  changeIdText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-
-  // Manual Input Card
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 22,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-    marginBottom: 18,
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 20,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 6,
+    elevation: 2,
   },
   inputLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#334155',
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1E293B',
     marginBottom: 10,
-    textAlign: 'center',
   },
   inputContainer: {
     flexDirection: 'row',
@@ -547,111 +294,70 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
     borderWidth: 2,
     borderColor: '#BAE6FD',
-    borderRadius: 14,
+    borderRadius: 12,
     paddingHorizontal: 14,
-    height: 60,
-    marginBottom: 10,
+    height: 56,
   },
   inputIcon: {
     marginRight: 10,
   },
   textInput: {
     flex: 1,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
     color: '#0F172A',
-    letterSpacing: 2,
-    textAlign: 'center',
+    letterSpacing: 1.5,
   },
   clearBtn: {
     padding: 6,
   },
-  revertSavedBtn: {
+  historyLinkRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    backgroundColor: '#F0F9FF',
-    borderRadius: 8,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
     gap: 6,
-    marginTop: 4,
   },
-  revertSavedText: {
-    fontSize: 13,
+  historyLinkText: {
+    fontSize: 12,
     fontWeight: '600',
     color: '#0284C7',
   },
-  inputHelpText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    textAlign: 'center',
-    lineHeight: 17,
-    marginTop: 4,
-  },
-
-  // Nút kiểm tra & lưu mã
-  checkCodeButton: {
-    backgroundColor: '#0284C7',
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 6,
-    marginBottom: 8,
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  checkCodeButtonDisabled: {
-    backgroundColor: '#94A3B8',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  checkButtonInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkCodeButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-
   bottomSection: {
-    marginTop: 8,
+    marginTop: 'auto',
+    paddingBottom: 10,
   },
   primaryButton: {
     backgroundColor: '#0284C7',
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 18,
-    borderRadius: 16,
-    elevation: 4,
+    paddingVertical: 16,
+    borderRadius: 14,
+    elevation: 3,
     shadowColor: '#0284C7',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
   },
   buttonDisabled: {
     backgroundColor: '#94A3B8',
+    elevation: 0,
     shadowOpacity: 0,
   },
   primaryButtonText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
   },
   btnIcon: {
-    marginLeft: 8,
+    marginLeft: 6,
   },
   privacyNote: {
-    fontSize: 11,
-    color: '#94A3B8',
+    fontSize: 12,
+    color: '#64748B',
     textAlign: 'center',
     marginTop: 12,
     lineHeight: 16,

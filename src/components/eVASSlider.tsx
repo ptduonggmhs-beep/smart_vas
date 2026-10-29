@@ -123,12 +123,11 @@ export const EVASSlider: React.FC<EVASSliderProps> = ({
     onSlidingCompleteRef.current = onSlidingComplete;
   }, [trackHeight, disabled, onChange, onSlidingStart, onSlidingComplete]);
 
-  // Dynamic theme color theo mức độ đau
+  // Dynamic theme color theo mức độ đau (0 - <4: Đau nhẹ, >=4 - <7: Đau vừa, >=7: Đau nặng)
   const getScoreTheme = (score: number) => {
-    if (score === 0) return { color: '#10B981', label: 'Không đau' };
-    if (score < 30) return { color: '#059669', label: 'Đau nhẹ' };
+    if (score < 40) return { color: '#059669', label: 'Đau nhẹ' };
     if (score < 70) return { color: '#D97706', label: 'Đau vừa' };
-    return { color: '#DC2626', label: 'Đau dữ dội' };
+    return { color: '#DC2626', label: 'Đau nặng' };
   };
 
   const clampedValue = Math.max(0, Math.min(100, value));

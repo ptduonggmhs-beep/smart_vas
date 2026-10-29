@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Assessment } from '../types';
+import { formatDateTime } from '../utils/timepointRules';
 
 interface ConfirmationScreenProps {
   assessment: Assessment;
@@ -21,18 +22,40 @@ export const ConfirmationScreen: React.FC<ConfirmationScreenProps> = ({
   onOpenHistory,
 }) => {
   const isSuccess = assessment.save_status === 'success';
+  const isNotCompleted = assessment.completion_status === 'not_completed';
+  const actualTimeStr = formatDateTime(assessment.actual_timestamp || assessment.submit_timestamp);
+  const timepointLabel = assessment.timepoint_label || (assessment.assessment_timepoint as string) || 'T0';
+  const scoreStr = typeof assessment.vas_score === 'number'
+    ? assessment.vas_score.toFixed(1)
+    : typeof assessment.eVAS_score === 'number'
+    ? assessment.eVAS_score.toFixed(1)
+    : '---';
+
+  const isT0 = assessment.timepoint_status === 'BASELINE' || timepointLabel === 'T0';
+  const elapsedMinutes = assessment.elapsed_minutes_from_T0 ?? 0;
 
   return (
     <ScrollView contentContainerStyle={styles.container} bounces={false}>
       <View style={styles.contentWrapper}>
-        {/* Animated-like Success Icon Circle */}
-        <View style={styles.iconCircle}>
-          <Ionicons name="checkmark" size={56} color="#FFFFFF" />
+        {/* Biểu tượng trạng thái thành công */}
+        <View
+          style={[
+            styles.iconCircle,
+            isNotCompleted && { backgroundColor: '#F59E0B' },
+          ]}
+        >
+          <Ionicons
+            name={isNotCompleted ? 'document-text-outline' : 'checkmark'}
+            size={52}
+            color="#FFFFFF"
+          />
         </View>
 
-        {/* Success Title */}
-        <Text style={styles.title}>Đã ghi nhận</Text>
-        <Text style={styles.subtitle}>Cảm ơn chị đã hoàn thành đánh giá.</Text>
+        {/* Tiêu đề trạng thái: Đã lưu đánh giá thành công */}
+        <Text style={styles.title}>Đã lưu đánh giá thành công</Text>
+        <Text style={styles.subtitle}>
+          Dữ liệu đánh giá đau đã được xác nhận và lưu vào hệ thống nghiên cứu an toàn.
+        </Text>
 
         {/* Sync Status Badge */}
         <View
@@ -53,95 +76,105 @@ export const ConfirmationScreen: React.FC<ConfirmationScreenProps> = ({
             ]}
           >
             {isSuccess
-              ? 'Đã đồng bộ lên Firebase (smart-vas-f312e)'
+              ? 'Đã đồng bộ lên CSDL trung tâm (Firebase)'
               : 'Đã lưu an toàn trong máy (Bộ nhớ cục bộ)'}
           </Text>
         </View>
 
-        {/* Permission warning banner if applicable */}
-        {assessment.error_code && assessment.error_code.toLowerCase().includes('permission') && (
-          <View style={styles.permissionWarningBanner}>
-            <Ionicons name="shield-checkmark-outline" size={18} color="#B45309" />
-            <View style={{ flex: 1, marginLeft: 8 }}>
-              <Text style={styles.permissionWarningTitle}>
-                Dữ liệu đã lưu an toàn trên máy
-              </Text>
-              <Text style={styles.permissionWarningSub}>
-                Kết quả đánh giá đã được lưu vào bộ nhớ cục bộ và sẽ tự động đồng bộ khi kết nối lại.
-              </Text>
+        {/* Thẻ tóm tắt thông tin kết quả đánh giá theo Phần 3.2 & 5.2 */}
+        <View style={styles.summaryCard}>
+          <Text style={styles.summaryTitle}>Chi tiết kết quả đánh giá</Text>
+
+          {/* Mốc thời gian */}
+          <View style={styles.highlightInfoRow}>
+            <Text style={styles.highlightLabel}>Mốc thời gian:</Text>
+            <View style={styles.timepointBadge}>
+              <Text style={styles.timepointBadgeText}>{timepointLabel}</Text>
             </View>
           </View>
-        )}
 
-        {/* Summary Card for Researcher & Clinical Validation */}
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryTitle}>Thông tin phiên đánh giá</Text>
+          {/* Giờ đánh giá thực tế */}
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Mã nghiên cứu:</Text>
-            <Text style={styles.infoValue}>{assessment.study_id}</Text>
+            <Text style={styles.infoLabel}>Giờ đánh giá thực tế:</Text>
+            <Text style={styles.infoValue}>{actualTimeStr}</Text>
           </View>
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Thời điểm đánh giá:</Text>
-            <Text style={styles.infoValue}>
-              {new Date(assessment.submit_timestamp).toLocaleTimeString('vi-VN', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
+
+          {/* Số phút từ T0 (nếu không phải T0) */}
+          {!isT0 && (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Thời gian từ T0:</Text>
+              <Text style={styles.infoValue}>{Math.round(elapsedMinutes)} phút</Text>
+            </View>
+          )}
+
+          {/* Điểm VAS */}
+          <View style={styles.divider} />
+          <View style={styles.scoreRow}>
+            <Text style={styles.scoreLabel}>Điểm VAS ghi nhận:</Text>
+            <Text style={styles.scoreValue}>{scoreStr} mm</Text>
           </View>
           <View style={styles.divider} />
+
+          {/* Mã bệnh nhân & Đợt theo dõi */}
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Bối cảnh đau:</Text>
-            <Text style={styles.infoValue}>
-              {assessment.pain_context === 'nghi' ? 'Đau lúc nghỉ' : 'Đau khi vận động'}
-            </Text>
+            <Text style={styles.infoLabel}>Mã bệnh nhân:</Text>
+            <Text style={styles.infoValue}>{assessment.patient_code || assessment.study_id}</Text>
           </View>
-          <View style={styles.divider} />
+
+          {assessment.episode_id && (
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Đợt theo dõi:</Text>
+              <Text style={[styles.infoValue, { fontSize: 12, color: '#64748B' }]}>
+                {assessment.episode_id}
+              </Text>
+            </View>
+          )}
+
+          {/* Trạng thái thời điểm */}
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Thời gian thao tác:</Text>
-            <Text style={styles.infoValue}>{assessment.duration_seconds} giây</Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Mã đánh giá (UUID):</Text>
-            <Text style={styles.infoValueUUID} numberOfLines={1}>
-              {assessment.assessment_id.slice(0, 18)}...
+            <Text style={styles.infoLabel}>Trạng thái cửa sổ:</Text>
+            <Text
+              style={[
+                styles.infoValue,
+                assessment.timepoint_status === 'ON_TIME' && { color: '#059669' },
+                assessment.timepoint_status === 'EARLY' && { color: '#D97706' },
+                assessment.timepoint_status === 'OUT_OF_WINDOW' && { color: '#7C3AED' },
+                assessment.timepoint_status === 'BASELINE' && { color: '#0284C7' },
+              ]}
+            >
+              {assessment.timepoint_status === 'BASELINE'
+                ? 'Thiết lập mốc T0 gốc'
+                : assessment.timepoint_status === 'ON_TIME'
+                ? 'Đúng cửa sổ quy định (±10 phút)'
+                : assessment.timepoint_status === 'EARLY'
+                ? 'Đánh giá sớm trước T1'
+                : 'Ngoài cửa sổ thời gian'}
             </Text>
           </View>
         </View>
 
-        {/* Safety Warning Box (Theo đúng PRD Trang 3 & 4) */}
-        <View style={styles.safetyBox}>
-          <View style={styles.safetyHeader}>
-            <Ionicons name="alert-circle" size={20} color="#DC2626" />
-            <Text style={styles.safetyTitle}>Cảnh báo an toàn</Text>
-          </View>
-          <Text style={styles.safetyText}>
-            Nếu chị đau nhiều hoặc cần hỗ trợ, hãy gọi nhân viên y tế ngay lập tức.
-          </Text>
-          <Text style={styles.safetySubtext}>
-            Ứng dụng chỉ thu thập dữ liệu nghiên cứu, KHÔNG được thiết kế để tự động ra quyết định dùng thuốc hoặc thay thế phác đồ điều trị thường quy của khoa.
-          </Text>
-        </View>
-      </View>
-
-      {/* Action Buttons */}
-      <View style={styles.bottomSection}>
-        {onOpenHistory && (
+        {/* Nút hành động */}
+        <View style={styles.actionsContainer}>
           <TouchableOpacity
-            style={styles.historyButton}
-            onPress={onOpenHistory}
-            activeOpacity={0.8}
+            style={styles.primaryBtn}
+            onPress={onReset}
+            activeOpacity={0.85}
           >
-            <Ionicons name="time-outline" size={20} color="#0284C7" style={{ marginRight: 8 }} />
-            <Text style={styles.historyButtonText}>Xem lịch sử các đánh giá của tôi</Text>
+            <Text style={styles.primaryBtnText}>Tiếp tục lượt đánh giá mới</Text>
+            <Ionicons name="arrow-forward" size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
           </TouchableOpacity>
-        )}
 
-        <TouchableOpacity style={styles.doneButton} onPress={onReset} activeOpacity={0.85}>
-          <Text style={styles.doneButtonText}>Hoàn tất / Đánh giá mới</Text>
-          <Ionicons name="refresh" size={20} color="#FFFFFF" style={{ marginLeft: 8 }} />
-        </TouchableOpacity>
+          {onOpenHistory && (
+            <TouchableOpacity
+              style={styles.secondaryBtn}
+              onPress={onOpenHistory}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="time-outline" size={18} color="#0284C7" style={{ marginRight: 6 }} />
+              <Text style={styles.secondaryBtnText}>Xem lịch sử đánh giá của bệnh nhân</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
     </ScrollView>
   );
@@ -149,49 +182,53 @@ export const ConfirmationScreen: React.FC<ConfirmationScreenProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    padding: 24,
-    paddingTop: 36,
+    padding: 20,
     flexGrow: 1,
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     backgroundColor: '#F8FAFC',
   },
   contentWrapper: {
     alignItems: 'center',
+    maxWidth: 440,
+    width: '100%',
+    alignSelf: 'center',
   },
   iconCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: '#10B981',
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: '#059669',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 20,
-    shadowColor: '#10B981',
+    marginBottom: 16,
+    shadowColor: '#059669',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowRadius: 10,
+    elevation: 6,
   },
   title: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: '800',
     color: '#0F172A',
-    marginBottom: 8,
     textAlign: 'center',
+    marginBottom: 6,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#475569',
+    fontSize: 13,
+    color: '#64748B',
     textAlign: 'center',
+    lineHeight: 18,
     marginBottom: 16,
+    paddingHorizontal: 12,
   },
   syncBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
     borderRadius: 20,
-    marginBottom: 24,
+    marginBottom: 20,
   },
   syncBadgeSuccess: {
     backgroundColor: '#ECFDF5',
@@ -204,7 +241,7 @@ const styles = StyleSheet.create({
     borderColor: '#FDE68A',
   },
   syncText: {
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     marginLeft: 6,
   },
@@ -214,145 +251,128 @@ const styles = StyleSheet.create({
   syncTextOffline: {
     color: '#B45309',
   },
-  permissionWarningBanner: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 20,
-  },
-  permissionWarningTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#92400E',
-    marginBottom: 2,
-  },
-  permissionWarningSub: {
-    fontSize: 12,
-    color: '#B45309',
-    lineHeight: 16,
-  },
   summaryCard: {
-    width: '100%',
     backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 20,
+    borderRadius: 16,
+    padding: 18,
+    width: '100%',
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginBottom: 20,
-    shadowColor: '#000',
+    shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
     shadowRadius: 6,
     elevation: 2,
+    marginBottom: 20,
   },
   summaryTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: '#1E293B',
-    marginBottom: 14,
+    marginBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    paddingBottom: 8,
+  },
+  highlightInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    backgroundColor: '#F0F9FF',
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  highlightLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0369A1',
+  },
+  timepointBadge: {
+    backgroundColor: '#0284C7',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  timepointBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 6,
+    marginBottom: 8,
   },
   infoLabel: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#64748B',
+    fontWeight: '500',
   },
   infoValue: {
+    fontSize: 13,
+    color: '#1E293B',
+    fontWeight: '700',
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  scoreLabel: {
     fontSize: 14,
     fontWeight: '700',
     color: '#0F172A',
   },
-  infoValueUUID: {
-    fontSize: 12,
-    fontFamily: 'monospace',
-    color: '#64748B',
-    maxWidth: '55%',
+  scoreValue: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0B3D91',
   },
   divider: {
     height: 1,
     backgroundColor: '#F1F5F9',
-    marginVertical: 4,
+    marginVertical: 10,
   },
-  safetyBox: {
+  actionsContainer: {
     width: '100%',
-    backgroundColor: '#FEF2F2',
-    borderRadius: 16,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    marginBottom: 16,
+    gap: 10,
   },
-  safetyHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  safetyTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#B91C1C',
-    marginLeft: 6,
-  },
-  safetyText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#991B1B',
-    lineHeight: 20,
-    marginBottom: 6,
-  },
-  safetySubtext: {
-    fontSize: 12,
-    color: '#7F1D1D',
-    lineHeight: 17,
-  },
-  bottomSection: {
-    marginTop: 12,
-    alignItems: 'center',
-    width: '100%',
-  },
-  historyButton: {
-    width: '100%',
-    backgroundColor: '#E0F2FE',
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 14,
-    borderRadius: 14,
-    marginBottom: 12,
-  },
-  historyButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  doneButton: {
-    width: '100%',
+  primaryBtn: {
     backgroundColor: '#0284C7',
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 18,
-    borderRadius: 16,
-    elevation: 4,
+    paddingVertical: 15,
+    borderRadius: 14,
+    elevation: 3,
     shadowColor: '#0284C7',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
   },
-  doneButtonText: {
-    fontSize: 18,
+  primaryBtnText: {
+    fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  secondaryBtn: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 13,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  secondaryBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0284C7',
   },
 });
