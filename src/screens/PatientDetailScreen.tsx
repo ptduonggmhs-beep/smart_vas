@@ -778,7 +778,7 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
             <ScrollView bounces={false} style={{ maxHeight: 520 }}>
               <View style={styles.editCardBody}>
                 <Text style={styles.t0ExplainText}>
-                  Chọn thời điểm kết thúc phẫu thuật hoặc lần đo ban đầu. Các mốc T1, T6, T12, T24 sẽ được tham chiếu từ mốc T0 này.
+                  Mốc T0 làm căn cứ thời gian tính các lần đo T1, T6, T12, T24.
                 </Text>
 
                 {/* Chọn nhanh mốc thời gian (Quick presets) */}
@@ -798,7 +798,7 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                     onPress={() => handleOffsetMinutesFromNow(15)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.quickPresetChipText}>-15 phút</Text>
+                    <Text style={styles.quickPresetChipText}>-15p</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -806,7 +806,7 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                     onPress={() => handleOffsetMinutesFromNow(30)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.quickPresetChipText}>-30 phút</Text>
+                    <Text style={styles.quickPresetChipText}>-30p</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -814,7 +814,7 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                     onPress={() => handleOffsetMinutesFromNow(60)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.quickPresetChipText}>-1 giờ</Text>
+                    <Text style={styles.quickPresetChipText}>-1h</Text>
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -822,26 +822,48 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                     onPress={() => handleOffsetMinutesFromNow(120)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.quickPresetChipText}>-2 giờ</Text>
+                    <Text style={styles.quickPresetChipText}>-2h</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.quickPresetChip, styles.quickPresetChipDay]}
+                    onPress={handleSetToday}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="today-outline" size={13} color="#0369A1" style={{ marginRight: 3 }} />
+                    <Text style={styles.quickPresetChipDayText}>Hôm nay</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.quickPresetChip, styles.quickPresetChipDay]}
+                    onPress={handleSetYesterday}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="time-outline" size={13} color="#475569" style={{ marginRight: 3 }} />
+                    <Text style={styles.quickPresetChipDayText}>Hôm qua</Text>
                   </TouchableOpacity>
                 </View>
 
-                {/* Bộ chỉnh GIỜ & PHÚT */}
-                <Text style={styles.pickerSectionLabel}>Điều chỉnh Giờ & Phút:</Text>
-                <View style={styles.timeAdjustBox}>
-                  {/* GIỜ */}
-                  <View style={styles.adjustUnitCol}>
-                    <Text style={styles.adjustUnitLabel}>GIỜ (00 - 23)</Text>
-                    <View style={styles.stepperRow}>
+                {/* BẢNG ĐIỀU CHỈNH THỜI ĐIỂM T0 TỐI GIẢN & ĐỒNG BỘ */}
+                <View style={styles.unifiedPickerCard}>
+                  {/* Phần Giờ & Phút */}
+                  <View style={styles.pickerSectionHeader}>
+                    <Ionicons name="time-outline" size={15} color="#0284C7" />
+                    <Text style={styles.pickerSectionTitle}>ĐIỀU CHỈNH GIỜ & PHÚT</Text>
+                  </View>
+
+                  <View style={styles.vStepperRowCenter}>
+                    {/* Cột Giờ */}
+                    <View style={styles.vStepperCol}>
                       <TouchableOpacity
-                        style={styles.stepperBtn}
-                        onPress={() => handleAdjustHour(-1)}
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustHour(1)}
                         activeOpacity={0.7}
                       >
-                        <Ionicons name="remove" size={22} color="#0284C7" />
+                        <Ionicons name="chevron-up" size={20} color="#0284C7" />
                       </TouchableOpacity>
                       <TextInput
-                        style={styles.stepperInput}
+                        style={styles.vStepperInput}
                         value={String(t0Hour).padStart(2, '0')}
                         onChangeText={(val) => {
                           const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
@@ -853,30 +875,28 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                         selectTextOnFocus
                       />
                       <TouchableOpacity
-                        style={styles.stepperBtn}
-                        onPress={() => handleAdjustHour(1)}
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustHour(-1)}
                         activeOpacity={0.7}
                       >
-                        <Ionicons name="add" size={22} color="#0284C7" />
+                        <Ionicons name="chevron-down" size={20} color="#0284C7" />
                       </TouchableOpacity>
+                      <Text style={styles.vStepperSubLabel}>Giờ (0-23)</Text>
                     </View>
-                  </View>
 
-                  <Text style={styles.timeColonSeparator}>:</Text>
+                    <Text style={styles.vColonSeparator}>:</Text>
 
-                  {/* PHÚT */}
-                  <View style={styles.adjustUnitCol}>
-                    <Text style={styles.adjustUnitLabel}>PHÚT (00 - 59)</Text>
-                    <View style={styles.stepperRow}>
+                    {/* Cột Phút */}
+                    <View style={styles.vStepperCol}>
                       <TouchableOpacity
-                        style={styles.stepperBtn}
-                        onPress={() => handleAdjustMinute(-5)}
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustMinute(5)}
                         activeOpacity={0.7}
                       >
-                        <Ionicons name="remove" size={22} color="#0284C7" />
+                        <Ionicons name="chevron-up" size={20} color="#0284C7" />
                       </TouchableOpacity>
                       <TextInput
-                        style={styles.stepperInput}
+                        style={styles.vStepperInput}
                         value={String(t0Minute).padStart(2, '0')}
                         onChangeText={(val) => {
                           const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
@@ -888,147 +908,120 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
                         selectTextOnFocus
                       />
                       <TouchableOpacity
-                        style={styles.stepperBtn}
-                        onPress={() => handleAdjustMinute(5)}
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustMinute(-5)}
                         activeOpacity={0.7}
                       >
-                        <Ionicons name="add" size={22} color="#0284C7" />
+                        <Ionicons name="chevron-down" size={20} color="#0284C7" />
                       </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
-
-                {/* Bộ chỉnh NGÀY, THÁNG, NĂM */}
-                <Text style={styles.pickerSectionLabel}>Ngày / Tháng / Năm:</Text>
-                <View style={styles.dateAdjustBox}>
-                  {/* Dòng 1: Ngày & Tháng */}
-                  <View style={styles.dateAdjustRowGroup}>
-                    {/* NGÀY */}
-                    <View style={styles.dateUnitColLarge}>
-                      <Text style={styles.adjustUnitLabel}>NGÀY (01 - 31)</Text>
-                      <View style={styles.stepperRow}>
-                        <TouchableOpacity
-                          style={styles.stepperBtnDate}
-                          onPress={() => handleAdjustDay(-1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="remove" size={20} color="#0284C7" />
-                        </TouchableOpacity>
-                        <TextInput
-                          style={styles.stepperInputDate}
-                          value={String(t0Day).padStart(2, '0')}
-                          onChangeText={(val) => {
-                            const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
-                            if (!isNaN(n)) setT0Day(Math.min(31, Math.max(1, n)));
-                            else if (val === '') setT0Day(1);
-                          }}
-                          keyboardType="number-pad"
-                          maxLength={2}
-                          selectTextOnFocus
-                        />
-                        <TouchableOpacity
-                          style={styles.stepperBtnDate}
-                          onPress={() => handleAdjustDay(1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="add" size={20} color="#0284C7" />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    <Text style={styles.dateSlashSeparator}>/</Text>
-
-                    {/* THÁNG */}
-                    <View style={styles.dateUnitColLarge}>
-                      <Text style={styles.adjustUnitLabel}>THÁNG (01 - 12)</Text>
-                      <View style={styles.stepperRow}>
-                        <TouchableOpacity
-                          style={styles.stepperBtnDate}
-                          onPress={() => handleAdjustMonth(-1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="remove" size={20} color="#0284C7" />
-                        </TouchableOpacity>
-                        <TextInput
-                          style={styles.stepperInputDate}
-                          value={String(t0Month).padStart(2, '0')}
-                          onChangeText={(val) => {
-                            const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
-                            if (!isNaN(n)) setT0Month(Math.min(12, Math.max(1, n)));
-                            else if (val === '') setT0Month(1);
-                          }}
-                          keyboardType="number-pad"
-                          maxLength={2}
-                          selectTextOnFocus
-                        />
-                        <TouchableOpacity
-                          style={styles.stepperBtnDate}
-                          onPress={() => handleAdjustMonth(1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="add" size={20} color="#0284C7" />
-                        </TouchableOpacity>
-                      </View>
+                      <Text style={styles.vStepperSubLabel}>Phút (0-59)</Text>
                     </View>
                   </View>
 
-                  {/* Dòng 2: Năm & Phím chọn nhanh Hôm nay / Hôm qua */}
-                  <View style={styles.dateRowSecond}>
-                    {/* NĂM */}
-                    <View style={styles.yearUnitCol}>
-                      <Text style={styles.adjustUnitLabel}>NĂM</Text>
-                      <View style={styles.stepperRow}>
-                        <TouchableOpacity
-                          style={styles.stepperBtnYear}
-                          onPress={() => handleAdjustYear(-1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="remove" size={18} color="#0284C7" />
-                        </TouchableOpacity>
-                        <TextInput
-                          style={styles.stepperInputYear}
-                          value={String(t0Year)}
-                          onChangeText={(val) => {
-                            const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
-                            if (!isNaN(n)) setT0Year(n);
-                            else if (val === '') setT0Year(new Date().getFullYear());
-                          }}
-                          keyboardType="number-pad"
-                          maxLength={4}
-                          selectTextOnFocus
-                        />
-                        <TouchableOpacity
-                          style={styles.stepperBtnYear}
-                          onPress={() => handleAdjustYear(1)}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="add" size={18} color="#0284C7" />
-                        </TouchableOpacity>
-                      </View>
+                  <View style={styles.pickerSectionDivider} />
+
+                  {/* Phần Ngày, Tháng, Năm */}
+                  <View style={styles.pickerSectionHeader}>
+                    <Ionicons name="calendar-outline" size={15} color="#0284C7" />
+                    <Text style={styles.pickerSectionTitle}>ĐIỀU CHỈNH NGÀY, THÁNG, NĂM</Text>
+                  </View>
+
+                  <View style={styles.vStepperRowCenter}>
+                    {/* Cột Ngày */}
+                    <View style={styles.vStepperCol}>
+                      <TouchableOpacity
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustDay(1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-up" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.vStepperInput}
+                        value={String(t0Day).padStart(2, '0')}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Day(Math.min(31, Math.max(1, n)));
+                          else if (val === '') setT0Day(1);
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                        selectTextOnFocus
+                      />
+                      <TouchableOpacity
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustDay(-1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-down" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <Text style={styles.vStepperSubLabel}>Ngày (1-31)</Text>
                     </View>
 
-                    {/* Phím chọn nhanh Hôm nay / Hôm qua */}
-                    <View style={styles.quickDateCol}>
-                      <Text style={styles.adjustUnitLabel}>CHỌN NHANH</Text>
-                      <View style={styles.quickDateButtonsRow}>
-                        <TouchableOpacity
-                          style={styles.dateQuickBtnLarge}
-                          onPress={handleSetToday}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="today-outline" size={15} color="#0369A1" style={{ marginRight: 4 }} />
-                          <Text style={styles.dateQuickBtnLargeText}>Hôm nay</Text>
-                        </TouchableOpacity>
+                    <Text style={styles.vSlashSeparator}>/</Text>
 
-                        <TouchableOpacity
-                          style={[styles.dateQuickBtnLarge, styles.dateQuickBtnSecondary]}
-                          onPress={handleSetYesterday}
-                          activeOpacity={0.7}
-                        >
-                          <Ionicons name="time-outline" size={15} color="#475569" style={{ marginRight: 4 }} />
-                          <Text style={styles.dateQuickBtnSecondaryText}>Hôm qua</Text>
-                        </TouchableOpacity>
-                      </View>
+                    {/* Cột Tháng */}
+                    <View style={styles.vStepperCol}>
+                      <TouchableOpacity
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustMonth(1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-up" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.vStepperInput}
+                        value={String(t0Month).padStart(2, '0')}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Month(Math.min(12, Math.max(1, n)));
+                          else if (val === '') setT0Month(1);
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                        selectTextOnFocus
+                      />
+                      <TouchableOpacity
+                        style={styles.vStepperBtn}
+                        onPress={() => handleAdjustMonth(-1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-down" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <Text style={styles.vStepperSubLabel}>Tháng (1-12)</Text>
+                    </View>
+
+                    <Text style={styles.vSlashSeparator}>/</Text>
+
+                    {/* Cột Năm */}
+                    <View style={styles.vStepperColYear}>
+                      <TouchableOpacity
+                        style={styles.vStepperBtnYear}
+                        onPress={() => handleAdjustYear(1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-up" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.vStepperInputYear}
+                        value={String(t0Year)}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Year(n);
+                          else if (val === '') setT0Year(new Date().getFullYear());
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={4}
+                        selectTextOnFocus
+                      />
+                      <TouchableOpacity
+                        style={styles.vStepperBtnYear}
+                        onPress={() => handleAdjustYear(-1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="chevron-down" size={20} color="#0284C7" />
+                      </TouchableOpacity>
+                      <Text style={styles.vStepperSubLabel}>Năm</Text>
                     </View>
                   </View>
                 </View>
@@ -1705,108 +1698,83 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#0284C7',
   },
-  timeAdjustBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-    gap: 8,
-    marginBottom: 14,
+  quickPresetChipDay: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5E1',
   },
-  adjustUnitCol: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  adjustUnitLabel: {
+  quickPresetChipDayText: {
     fontSize: 11,
-    fontWeight: '800',
-    color: '#475569',
-    marginBottom: 6,
-    letterSpacing: 0.3,
+    fontWeight: '700',
+    color: '#334155',
   },
-  stepperRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  stepperBtn: {
-    width: 42,
-    height: 48,
-    borderRadius: 10,
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperInput: {
-    width: 62,
-    height: 48,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1.5,
-    borderColor: '#0284C7',
-    borderRadius: 10,
-    textAlign: 'center',
-    textAlignVertical: 'center',
-    paddingVertical: 0,
-    paddingHorizontal: 0,
-    fontSize: 22,
-    fontWeight: '900',
-    color: '#0F172A',
-    ...Platform.select({
-      android: {
-        includeFontPadding: false,
-      },
-    }),
-  },
-  timeColonSeparator: {
-    fontSize: 26,
-    fontWeight: '900',
-    color: '#0284C7',
-    marginTop: 18,
-    paddingHorizontal: 2,
-  },
-  dateAdjustBox: {
+  unifiedPickerCard: {
     backgroundColor: '#F8FAFC',
     borderRadius: 14,
     paddingVertical: 12,
     paddingHorizontal: 10,
     borderWidth: 1.5,
     borderColor: '#E2E8F0',
-    gap: 12,
-    marginBottom: 14,
+    marginBottom: 10,
   },
-  dateAdjustRowGroup: {
+  pickerSectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
+    gap: 6,
+    marginBottom: 8,
   },
-  dateUnitColLarge: {
-    flex: 1,
-    alignItems: 'center',
+  pickerSectionTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#475569',
+    letterSpacing: 0.4,
   },
-  stepperBtnDate: {
-    width: 38,
-    height: 46,
-    borderRadius: 9,
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
+  pickerSectionDivider: {
+    height: 1,
+    backgroundColor: '#E2E8F0',
+    marginVertical: 10,
+  },
+  vStepperRowCenter: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepperInputDate: {
-    width: 54,
-    height: 46,
+  vStepperCol: {
+    width: 58,
+    alignItems: 'center',
+  },
+  vStepperColYear: {
+    width: 72,
+    alignItems: 'center',
+  },
+  vStepperBtn: {
+    width: 58,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vStepperBtnYear: {
+    width: 72,
+    height: 28,
+    borderRadius: 8,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  vStepperInput: {
+    width: 58,
+    height: 42,
+    marginVertical: 3,
     backgroundColor: '#FFFFFF',
     borderWidth: 1.5,
     borderColor: '#0284C7',
-    borderRadius: 9,
+    borderRadius: 8,
     textAlign: 'center',
     textAlignVertical: 'center',
     paddingVertical: 0,
@@ -1820,38 +1788,10 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  dateSlashSeparator: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: '#94A3B8',
-    marginTop: 18,
-    paddingHorizontal: 4,
-  },
-  dateRowSecond: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    paddingTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-  },
-  yearUnitCol: {
-    alignItems: 'center',
-  },
-  stepperBtnYear: {
-    width: 36,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepperInputYear: {
+  vStepperInputYear: {
     width: 72,
-    height: 44,
+    height: 42,
+    marginVertical: 3,
     backgroundColor: '#FFFFFF',
     borderWidth: 1.5,
     borderColor: '#0284C7',
@@ -1869,40 +1809,26 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  quickDateCol: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  quickDateButtonsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  dateQuickBtnLarge: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 44,
-    backgroundColor: '#E0F2FE',
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
-    borderRadius: 10,
-    paddingHorizontal: 8,
-  },
-  dateQuickBtnLargeText: {
-    fontSize: 12.5,
-    fontWeight: '800',
-    color: '#0369A1',
-  },
-  dateQuickBtnSecondary: {
-    backgroundColor: '#F1F5F9',
-    borderColor: '#CBD5E1',
-  },
-  dateQuickBtnSecondaryText: {
-    fontSize: 12.5,
+  vStepperSubLabel: {
+    fontSize: 10,
     fontWeight: '700',
-    color: '#475569',
+    color: '#64748B',
+    marginTop: 3,
+    textAlign: 'center',
+  },
+  vColonSeparator: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#0284C7',
+    marginHorizontal: 10,
+    marginBottom: 16,
+  },
+  vSlashSeparator: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#94A3B8',
+    marginHorizontal: 6,
+    marginBottom: 16,
   },
   previewBox: {
     backgroundColor: '#F0F9FF',
