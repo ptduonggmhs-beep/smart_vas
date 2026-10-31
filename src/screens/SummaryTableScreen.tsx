@@ -55,6 +55,11 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
   const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  // Cam kết bảo mật & Tiêu hủy dữ liệu bệnh nhân trên app
+  const [isCommittedToWipe, setIsCommittedToWipe] = useState<boolean>(false);
+  const [isPurgingData, setIsPurgingData] = useState<boolean>(false);
+  const [hasPurgedData, setHasPurgedData] = useState<boolean>(false);
+
   // Chế độ Chọn bệnh nhân để xuất (Phần 4.3)
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
   const [selectedPatientIds, setSelectedPatientIds] = useState<Set<string>>(new Set());
@@ -234,8 +239,40 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
     return ExcelExportService.validateDataBeforeExport(patients, assessments, timepoints);
   }, [patients, assessments, timepoints]);
 
-  // Bước 1: Tạo file Excel thật (.xlsx)
+  // Thực hiện xóa sạch toàn bộ dữ liệu bệnh nhân trên app (bộ nhớ máy & CSDL đám mây)
+  const handlePurgeData = async (silent: boolean = false): Promise<boolean> => {
+    setIsPurgingData(true);
+    try {
+      const res = await FirebaseService.clearAllPatientData();
+      setHasPurgedData(true);
+      setPatients([]);
+      setAssessments([]);
+      setSelectedPatientIds(new Set());
+      const msg = `Đã tiêu hủy toàn bộ dữ liệu (${res.deletedPatients} bệnh nhân, ${res.deletedAssessments} lượt đo) trên ứng dụng và CSDL đám mây. Nhà phát hành không lưu trữ bất kỳ thông tin nào của người bệnh.`;
+      setExportNotice(msg);
+      if (!silent) {
+        Alert.alert('Bảo mật dữ liệu', msg);
+      }
+      return true;
+    } catch (err: any) {
+      console.error('Lỗi khi tiêu hủy dữ liệu:', err);
+      setExportError('Lỗi tiêu hủy dữ liệu: ' + (err?.message || 'Không xác định'));
+      return false;
+    } finally {
+      setIsPurgingData(false);
+    }
+  };
+
+  // Bước 1: Tạo file Excel thật (.xlsx) sau khi xác nhận cam kết bảo mật
   const handlePrepareExport = async () => {
+    if (!isCommittedToWipe) {
+      Alert.alert(
+        'Bảng cam kết bảo mật',
+        'Vui lòng đọc và đánh dấu chọn cam kết tiêu hủy toàn bộ dữ liệu bệnh nhân trên app trước khi tạo file Excel.'
+      );
+      return;
+    }
+
     if (exportScope === 'selected' && selectedPatientIds.size === 0) {
       Alert.alert('Chưa chọn bệnh nhân', 'Vui lòng chọn ít nhất một bệnh nhân trước khi xuất.');
       return;
@@ -284,6 +321,10 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
       if (res.status === 'shared') {
         setExportStatus('shared');
         setExportNotice('Đã kích hoạt bảng chia sẻ iPhone. Bạn hãy chọn Zalo hoặc Lưu vào Tệp.');
+        // Tự động tiêu hủy dữ liệu bệnh nhân trên app theo cam kết bảo mật
+        if (!hasPurgedData) {
+          await handlePurgeData(true);
+        }
       } else if (res.status === 'cancelled') {
         setExportStatus('cancelled');
         setExportNotice('Bạn đã đóng bảng chia sẻ. File vẫn sẵn sàng nếu bạn muốn chia sẻ lại hoặc tải về.');
@@ -301,27 +342,77 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
   };
 
   // Phương án dự phòng: Tải file về máy
-  const handleDownloadFile = () => {
+  const handleDownloadFile = async () => {
     if (!preparedFile) return;
 
     const res = ExcelExportService.downloadPreparedFile(preparedFile);
     if (res.success) {
       setExportNotice('Đã gửi yêu cầu tải file về máy. Bạn có thể mở ứng dụng Tệp (Files) trên iPhone để tìm file và gửi qua Zalo.');
+      // Tự động tiêu hủy dữ liệu bệnh nhân trên app theo cam kết bảo mật
+      if (!hasPurgedData) {
+        await handlePurgeData(true);
+      }
     } else {
       Alert.alert('Thông báo', res.error || 'Vui lòng sử dụng tính năng Chia sẻ để Lưu vào Tệp trên iPhone.');
     }
   };
 
-  // Đóng modal và giải phóng Blob URL
+  // Mở modal xuất Excel (khởi tạo lại trạng thái cam kết)
+  const handleOpenExportModal = () => {
+    setIsCommittedToWipe(false);
+    setHasPurgedData(false);
+    setExportStatus('idle');
+    setExportError(null);
+    setExportNotice(null);
+    setIsExportModalOpen(true);
+  };
+
+  // Đóng modal và xử lý cam kết tiêu hủy dữ liệu
   const handleCloseExportModal = () => {
+    // Nếu đã tạo file nhưng chưa tiêu hủy dữ liệu
+    if (preparedFile && !hasPurgedData) {
+      Alert.alert(
+        'Xác nhận tiêu hủy dữ liệu',
+        'Theo cam kết bảo mật, tất cả dữ liệu bệnh nhân trên app sẽ bị xóa bỏ sau khi xuất file Excel để đảm bảo nhà phát hành không lưu trữ thông tin bệnh nhân. Bạn có muốn thực hiện xóa sạch dữ liệu bệnh nhân ngay bây giờ?',
+        [
+          {
+            text: 'Tiêu hủy và Đóng',
+            style: 'destructive',
+            onPress: async () => {
+              await handlePurgeData(true);
+              closeModalDirectly();
+            },
+          },
+          {
+            text: 'Đóng mà không tiêu hủy',
+            style: 'cancel',
+            onPress: () => {
+              closeModalDirectly();
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    closeModalDirectly();
+  };
+
+  const closeModalDirectly = () => {
     if (preparedFile) {
       ExcelExportService.revokePreparedFile(preparedFile);
       setPreparedFile(null);
     }
+    const wasPurged = hasPurgedData;
     setExportStatus('idle');
     setExportError(null);
     setExportNotice(null);
     setIsExportModalOpen(false);
+    setIsCommittedToWipe(false);
+    setHasPurgedData(false);
+    if (wasPurged) {
+      loadData();
+    }
   };
 
   return (
@@ -354,7 +445,7 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
         <View style={styles.headerLine3}>
           <TouchableOpacity
             style={styles.exportExcelBtn}
-            onPress={() => setIsExportModalOpen(true)}
+            onPress={handleOpenExportModal}
             activeOpacity={0.85}
           >
             <Ionicons name="document-text" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
@@ -585,6 +676,12 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
                 <View style={[styles.tableHeaderCell, { width: 110 }]}>
                   <Text style={styles.tableHeaderText}>T0 tham chiếu</Text>
                 </View>
+                {!timepoints.some((tp) => tp.key.replace('h', '').toUpperCase() === 'T0') && (
+                  <View style={[styles.tableHeaderCell, styles.timepointVasHeaderCell, { width: 85 }]}>
+                    <Text style={styles.timepointVasHeaderText}>VAS T0</Text>
+                    <Text style={styles.timepointSubText}>(mm)</Text>
+                  </View>
+                )}
 
                 {/* Các cột Mốc T (VAS và Giờ đánh giá) */}
                 {timepoints.map((tp) => (
@@ -669,6 +766,29 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
                         </Text>
                       </View>
 
+                      {/* VAS T0 nếu chưa có trong timepoints */}
+                      {!timepoints.some((tp) => tp.key.replace('h', '').toUpperCase() === 'T0') && (() => {
+                        const t0List = patientMap['T0'] || [];
+                        const primaryT0 = t0List.length > 0 ? (t0List.find((item) => item.is_primary_assessment) || t0List[0]) : null;
+                        const t0Score = primaryT0 ? (primaryT0.vas_score ?? primaryT0.eVAS_score) : null;
+                        return (
+                          <View style={[styles.tableCell, styles.cellVasScoreBox, { width: 85 }]}>
+                            {t0Score !== null && t0Score !== undefined ? (
+                              <View style={styles.scoreWithBadge}>
+                                <Text style={styles.cellScoreNumber}>{t0Score.toFixed(1)}</Text>
+                                {t0List.length > 1 && (
+                                  <View style={styles.multiCountBadge}>
+                                    <Text style={styles.multiCountBadgeText}>x{t0List.length}</Text>
+                                  </View>
+                                )}
+                              </View>
+                            ) : (
+                              <Text style={styles.cellEmptyText}>—</Text>
+                            )}
+                          </View>
+                        );
+                      })()}
+
                       {/* Các cột Mốc T */}
                       {timepoints.map((tp) => {
                         const normTp = tp.key.replace('h', '').toUpperCase();
@@ -731,7 +851,7 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
       )}
 
       {/* ============================================================ */}
-      {/* MODAL XUẤT EXCEL .XLSX VỚI 3 SHEET & CHIA SẺ IPHONE (ZALO)     */}
+      {/* MODAL XUẤT EXCEL .XLSX VỚI 3 SHEET & BẢNG CAM KẾT BẢO MẬT     */}
       {/* ============================================================ */}
       <Modal
         visible={isExportModalOpen}
@@ -759,281 +879,382 @@ export const SummaryTableScreen: React.FC<SummaryTableScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            {/* TRẠNG THÁI 1: IDLE - CẤU HÌNH PHẠM VI VÀ BẤM TẠO FILE */}
-            {exportStatus === 'idle' && (
-              <>
-                {/* Chi tiết 3 Sheet chuẩn */}
-                <View style={styles.exportSheetInfoBox}>
-                  <Text style={styles.sheetInfoTitle}>File Excel sẽ bao gồm 3 Sheet:</Text>
-                  <View style={styles.sheetInfoItem}>
-                    <Ionicons name="layers-outline" size={14} color="#0284C7" />
-                    <Text style={styles.sheetInfoText}>
-                      <Text style={styles.boldText}>1. TONG_HOP:</Text> Mỗi dòng là 1 BN, các cột VAS & giờ từng mốc
-                    </Text>
-                  </View>
-                  <View style={styles.sheetInfoItem}>
-                    <Ionicons name="layers-outline" size={14} color="#0284C7" />
-                    <Text style={styles.sheetInfoText}>
-                      <Text style={styles.boldText}>2. CHI_TIET:</Text> Toàn bộ các lần đo của các BN được xuất
-                    </Text>
-                  </View>
-                  <View style={styles.sheetInfoItem}>
-                    <Ionicons name="layers-outline" size={14} color="#0284C7" />
-                    <Text style={styles.sheetInfoText}>
-                      <Text style={styles.boldText}>3. HUONG_DAN_BIEN:</Text> Từ điển tên biến và kiểu dữ liệu SPSS/R
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Phạm vi xuất */}
-                <View style={styles.exportOptionGroup}>
-                  <Text style={styles.exportOptionLabel}>Phạm vi xuất dữ liệu:</Text>
-                  <View style={styles.scopeButtonRow}>
-                    <TouchableOpacity
-                      style={[styles.scopeBtn, exportScope === 'all' && styles.scopeBtnActive]}
-                      onPress={() => setExportScope('all')}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.scopeBtnText, exportScope === 'all' && styles.scopeBtnTextActive]}>
-                        Toàn bộ ({patients.length})
+            <ScrollView
+              style={styles.exportDialogScroll}
+              contentContainerStyle={styles.exportDialogScrollContent}
+              showsVerticalScrollIndicator={true}
+              bounces={false}
+            >
+              {/* TRẠNG THÁI 1: IDLE - CẤU HÌNH PHẠM VI, BẢNG CAM KẾT VÀ BẤM TẠO FILE */}
+              {exportStatus === 'idle' && (
+                <>
+                  {/* Chi tiết 3 Sheet chuẩn */}
+                  <View style={styles.exportSheetInfoBox}>
+                    <Text style={styles.sheetInfoTitle}>File Excel sẽ bao gồm 3 Sheet:</Text>
+                    <View style={styles.sheetInfoItem}>
+                      <Ionicons name="layers-outline" size={14} color="#0284C7" />
+                      <Text style={styles.sheetInfoText}>
+                        <Text style={styles.boldText}>1. TONG_HOP:</Text> Mỗi dòng là 1 BN, các cột VAS & giờ từng mốc
                       </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.scopeBtn, exportScope === 'filtered' && styles.scopeBtnActive]}
-                      onPress={() => setExportScope('filtered')}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.scopeBtnText, exportScope === 'filtered' && styles.scopeBtnTextActive]}>
-                        Đang lọc ({filteredPatients.length})
+                    </View>
+                    <View style={styles.sheetInfoItem}>
+                      <Ionicons name="layers-outline" size={14} color="#0284C7" />
+                      <Text style={styles.sheetInfoText}>
+                        <Text style={styles.boldText}>2. CHI_TIET:</Text> Toàn bộ các lần đo của các BN được xuất
                       </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.scopeBtn, exportScope === 'selected' && styles.scopeBtnActive]}
-                      onPress={() => setExportScope('selected')}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={[styles.scopeBtnText, exportScope === 'selected' && styles.scopeBtnTextActive]}>
-                        Đã chọn ({selectedPatientIds.size})
+                    </View>
+                    <View style={styles.sheetInfoItem}>
+                      <Ionicons name="layers-outline" size={14} color="#0284C7" />
+                      <Text style={styles.sheetInfoText}>
+                        <Text style={styles.boldText}>3. HUONG_DAN_BIEN:</Text> Từ điển tên biến và kiểu dữ liệu SPSS/R
                       </Text>
-                    </TouchableOpacity>
+                    </View>
                   </View>
-                </View>
 
-                {/* Tóm tắt thông tin trước khi tạo file */}
-                <View style={styles.exportPreSummaryBox}>
-                  <Text style={styles.exportPreSummaryTitle}>Thông tin file dự kiến:</Text>
-                  <Text style={styles.exportPreSummaryLine}>
-                    • Số bệnh nhân: <Text style={styles.boldText}>{targetExportPatients.length} bệnh nhân</Text>
-                  </Text>
-                  <Text style={styles.exportPreSummaryLine}>
-                    • Số lượt đánh giá: <Text style={styles.boldText}>{targetExportAssessments.length} lượt đo</Text>
-                  </Text>
-                  <Text style={styles.exportPreSummaryLine}>
-                    • Tên file: <Text style={styles.boldText}>{expectedFilename}</Text>
-                  </Text>
-                  <Text style={styles.exportPreSummaryHighlight}>
-                    Xuất dữ liệu {targetExportPatients.length} bệnh nhân với {targetExportAssessments.length} lượt đánh giá.
-                  </Text>
-                </View>
-
-                {/* Tùy chọn bảo mật Họ tên */}
-                <TouchableOpacity
-                  style={styles.checkboxRow}
-                  onPress={() => setExportIncludeNames((prev) => !prev)}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons
-                    name={exportIncludeNames ? 'checkbox' : 'square-outline'}
-                    size={20}
-                    color={exportIncludeNames ? '#0284C7' : '#94A3B8'}
-                  />
-                  <Text style={styles.checkboxLabel}>
-                    Kèm Họ và tên bệnh nhân (dữ liệu định danh)
-                  </Text>
-                </TouchableOpacity>
-
-                {exportError && (
-                  <View style={[styles.statusBanner, { backgroundColor: '#FEE2E2' }]}>
-                    <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                    <Text style={[styles.statusBannerText, { color: '#B91C1C' }]}>{exportError}</Text>
-                  </View>
-                )}
-
-                {/* Nút Tạo file */}
-                <View style={styles.exportActionRow}>
-                  <TouchableOpacity
-                    style={styles.cancelExportBtn}
-                    onPress={handleCloseExportModal}
-                  >
-                    <Text style={styles.cancelExportBtnText}>Đóng</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.doExportBtn}
-                    onPress={handlePrepareExport}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons name="document-text-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.doExportBtnText}>TẠO FILE EXCEL (.xlsx)</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-
-            {/* TRẠNG THÁI 2: GENERATING - ĐANG TẠO FILE EXCEL THẬT */}
-            {exportStatus === 'generating' && (
-              <View style={styles.generatingStateBox}>
-                <ActivityIndicator size="large" color="#059669" style={{ marginBottom: 14 }} />
-                <Text style={styles.generatingTitle}>Đang tạo file Excel thật (.xlsx)...</Text>
-                <Text style={styles.generatingSubtext}>
-                  Đang xử lý dữ liệu {targetExportPatients.length} bệnh nhân và xác thực 3 Sheet (TONG_HOP, CHI_TIET, HUONG_DAN_BIEN).
-                </Text>
-              </View>
-            )}
-
-            {/* TRẠNG THÁI 3: READY / SHARING / SHARED / CANCELLED / UNSUPPORTED - FILE ĐÃ SẴN SÀNG */}
-            {(exportStatus === 'ready' ||
-              exportStatus === 'sharing' ||
-              exportStatus === 'shared' ||
-              exportStatus === 'cancelled' ||
-              exportStatus === 'unsupported') &&
-              preparedFile && (
-                <View style={styles.fileReadyContainer}>
-                  {/* Thẻ thông tin file đã tạo thành công */}
-                  <View style={styles.readyFileCard}>
-                    <View style={styles.readyFileHeader}>
-                      <Ionicons name="checkmark-circle" size={24} color="#059669" />
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.readyFileName} numberOfLines={1}>
-                          {preparedFile.filename}
+                  {/* Phạm vi xuất */}
+                  <View style={styles.exportOptionGroup}>
+                    <Text style={styles.exportOptionLabel}>Phạm vi xuất dữ liệu:</Text>
+                    <View style={styles.scopeButtonRow}>
+                      <TouchableOpacity
+                        style={[styles.scopeBtn, exportScope === 'all' && styles.scopeBtnActive]}
+                        onPress={() => setExportScope('all')}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.scopeBtnText, exportScope === 'all' && styles.scopeBtnTextActive]}>
+                          Toàn bộ ({patients.length})
                         </Text>
-                        <Text style={styles.readyFileMeta}>
-                          Dung lượng: {preparedFile.formattedSize} • {preparedFile.patientCount} BN • {preparedFile.assessmentCount} lượt đo
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.scopeBtn, exportScope === 'filtered' && styles.scopeBtnActive]}
+                        onPress={() => setExportScope('filtered')}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.scopeBtnText, exportScope === 'filtered' && styles.scopeBtnTextActive]}>
+                          Đang lọc ({filteredPatients.length})
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.scopeBtn, exportScope === 'selected' && styles.scopeBtnActive]}
+                        onPress={() => setExportScope('selected')}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={[styles.scopeBtnText, exportScope === 'selected' && styles.scopeBtnTextActive]}>
+                          Đã chọn ({selectedPatientIds.size})
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* Tóm tắt thông tin trước khi tạo file */}
+                  <View style={styles.exportPreSummaryBox}>
+                    <Text style={styles.exportPreSummaryTitle}>Thông tin file dự kiến:</Text>
+                    <Text style={styles.exportPreSummaryLine}>
+                      • Số bệnh nhân: <Text style={styles.boldText}>{targetExportPatients.length} bệnh nhân</Text>
+                    </Text>
+                    <Text style={styles.exportPreSummaryLine}>
+                      • Số lượt đánh giá: <Text style={styles.boldText}>{targetExportAssessments.length} lượt đo</Text>
+                    </Text>
+                    <Text style={styles.exportPreSummaryLine}>
+                      • Tên file: <Text style={styles.boldText}>{expectedFilename}</Text>
+                    </Text>
+                    <Text style={styles.exportPreSummaryHighlight}>
+                      Xuất dữ liệu {targetExportPatients.length} bệnh nhân với {targetExportAssessments.length} lượt đánh giá.
+                    </Text>
+                  </View>
+
+                  {/* Tùy chọn bảo mật Họ tên */}
+                  <TouchableOpacity
+                    style={styles.checkboxRow}
+                    onPress={() => setExportIncludeNames((prev) => !prev)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={exportIncludeNames ? 'checkbox' : 'square-outline'}
+                      size={20}
+                      color={exportIncludeNames ? '#0284C7' : '#94A3B8'}
+                    />
+                    <Text style={styles.checkboxLabel}>
+                      Kèm Họ và tên bệnh nhân (dữ liệu định danh)
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* BẢNG CAM KẾT BẢO MẬT & TIÊU HỦY DỮ LIỆU BỆNH NHÂN */}
+                  <View style={styles.commitmentContainer}>
+                    <View style={styles.commitmentHeader}>
+                      <Ionicons name="shield-checkmark" size={18} color="#B91C1C" />
+                      <Text style={styles.commitmentTitle}>BẢNG CAM KẾT BẢO MẬT & BẢO VỆ DỮ LIỆU</Text>
+                    </View>
+
+                    <View style={styles.commitmentBody}>
+                      <View style={styles.commitmentItem}>
+                        <Ionicons name="lock-closed" size={13} color="#B91C1C" style={{ marginTop: 2 }} />
+                        <Text style={styles.commitmentText}>
+                          <Text style={styles.boldText}>Mục đích bảo mật:</Text> Bảo mật tuyệt đối thông tin bệnh nhân và an toàn dữ liệu cho người sử dụng (bác sĩ/nghiên cứu viên).
+                        </Text>
+                      </View>
+
+                      <View style={styles.commitmentItem}>
+                        <Ionicons name="trash" size={13} color="#B91C1C" style={{ marginTop: 2 }} />
+                        <Text style={styles.commitmentText}>
+                          <Text style={styles.boldText}>Tiêu hủy dữ liệu trên app:</Text> Ngay sau khi bạn đồng ý xuất và nhận file Excel (.xlsx), toàn bộ hồ sơ bệnh nhân và các lượt đánh giá trên app sẽ bị xóa bỏ hoàn toàn (cả trên bộ nhớ máy và hệ thống máy chủ).
+                        </Text>
+                      </View>
+
+                      <View style={styles.commitmentItem}>
+                        <Ionicons name="checkmark-done-circle" size={13} color="#B91C1C" style={{ marginTop: 2 }} />
+                        <Text style={styles.commitmentText}>
+                          <Text style={styles.boldText}>Nhà phát hành không quản lý:</Text> Nhà phát hành ứng dụng Smart-VAS cam kết <Text style={styles.boldText}>không lưu trữ, không quản lý và không tiếp cận bất kỳ thông tin nào của bệnh nhân</Text> sau khi xuất dữ liệu sang Excel. Quyền sở hữu dữ liệu thuộc về người sử dụng.
                         </Text>
                       </View>
                     </View>
 
-                    <View style={styles.readySheetBadge}>
-                      <Ionicons name="shield-checkmark" size={13} color="#166534" style={{ marginRight: 4 }} />
-                      <Text style={styles.readySheetBadgeText}>
-                        Đã xác thực 3 Sheet hợp lệ (TONG_HOP, CHI_TIET, HUONG_DAN_BIEN)
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Thông báo trạng thái tương tác */}
-                  {exportStatus === 'shared' && (
-                    <View style={[styles.statusBanner, { backgroundColor: '#EFF6FF' }]}>
-                      <Ionicons name="information-circle" size={18} color="#0284C7" />
-                      <Text style={[styles.statusBannerText, { color: '#0369A1' }]}>
-                        Đã mở bảng chia sẻ iPhone. Bạn hãy chọn Zalo hoặc Lưu vào Tệp.
-                      </Text>
-                    </View>
-                  )}
-
-                  {exportStatus === 'cancelled' && (
-                    <View style={[styles.statusBanner, { backgroundColor: '#FFFBEB' }]}>
-                      <Ionicons name="alert-circle" size={18} color="#D97706" />
-                      <Text style={[styles.statusBannerText, { color: '#B45309' }]}>
-                        Bạn đã đóng bảng chia sẻ. File vẫn sẵn sàng nếu bạn muốn chia sẻ lại.
-                      </Text>
-                    </View>
-                  )}
-
-                  {exportNotice && exportStatus !== 'shared' && exportStatus !== 'cancelled' && (
-                    <View style={[styles.statusBanner, { backgroundColor: '#F0FDF4' }]}>
-                      <Ionicons name="checkmark-circle" size={18} color="#059669" />
-                      <Text style={[styles.statusBannerText, { color: '#15803D' }]}>{exportNotice}</Text>
-                    </View>
-                  )}
-
-                  {/* 2 NÚT THAO TÁC RÕ RÀNG: CHIA SẺ IPHONE & TẢI VỀ */}
-                  <View style={styles.actionButtonStack}>
-                    {/* NÚT CHÍNH: CHIA SẺ FILE (ZALO / LƯU VÀO TỆP) */}
+                    {/* Checkbox cam kết bắt buộc */}
                     <TouchableOpacity
-                      style={styles.btnSharePrimary}
-                      onPress={handleShareFile}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="share-social" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-                      <Text style={styles.btnSharePrimaryText}>CHIA SẺ FILE (ZALO / TỆP)</Text>
-                    </TouchableOpacity>
-
-                    {/* NÚT PHỤ: TẢI FILE VỀ MÁY */}
-                    <TouchableOpacity
-                      style={styles.btnDownloadSecondary}
-                      onPress={handleDownloadFile}
+                      style={[
+                        styles.commitmentCheckboxRow,
+                        isCommittedToWipe && styles.commitmentCheckboxRowChecked,
+                      ]}
+                      onPress={() => setIsCommittedToWipe((prev) => !prev)}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name="download-outline" size={18} color="#0284C7" style={{ marginRight: 6 }} />
-                      <Text style={styles.btnDownloadSecondaryText}>Tải file về máy (.xlsx)</Text>
+                      <Ionicons
+                        name={isCommittedToWipe ? 'checkbox' : 'square-outline'}
+                        size={22}
+                        color={isCommittedToWipe ? '#DC2626' : '#94A3B8'}
+                      />
+                      <Text style={[styles.commitmentCheckboxLabel, isCommittedToWipe && styles.commitmentCheckboxLabelChecked]}>
+                        Tôi đã đọc, hiểu rõ và ĐỒNG Ý cam kết trên: Xóa bỏ toàn bộ dữ liệu bệnh nhân trên app ngay sau khi xuất file Excel.
+                      </Text>
                     </TouchableOpacity>
                   </View>
 
-                  {/* HƯỚNG DẪN CHI TIẾT GỬI QUA ZALO TRÊN IPHONE (MỤC 3 & 4) */}
-                  <View style={styles.zaloGuideBox}>
-                    <Text style={styles.zaloGuideTitle}>📱 HƯỚNG DẪN GỬI QUA ZALO TRÊN IPHONE:</Text>
-                    <Text style={styles.zaloGuideText}>
-                      <Text style={styles.boldText}>Cách 1:</Text> Bấm nút <Text style={{ color: '#059669', fontWeight: '800' }}>[CHIA SẺ FILE]</Text> ở trên. Khi bảng chia sẻ iPhone hiện lên, chạm vào biểu tượng <Text style={styles.boldText}>Zalo</Text> → Chọn người nhận hoặc nhóm → Bấm Gửi.
-                    </Text>
-                    <Text style={styles.zaloGuideText}>
-                      <Text style={styles.boldText}>Cách 2 (Nếu không thấy Zalo):</Text> Chọn <Text style={styles.boldText}>Lưu vào Tệp</Text> (Save to Files) → Mở Zalo → Vào cuộc trò chuyện → Bấm dấu <Text style={styles.boldText}>(+)</Text> → Chọn <Text style={styles.boldText}>Tài liệu</Text> → Chọn file Excel vừa lưu.
-                    </Text>
-                    <Text style={styles.zaloGuideTip}>
-                      💡 Lưu ý: Trình duyệt Safari trên iPhone hỗ trợ đầy đủ việc gửi file đính kèm trực tiếp sang Zalo.
-                    </Text>
-                  </View>
+                  {exportError && (
+                    <View style={[styles.statusBanner, { backgroundColor: '#FEE2E2' }]}>
+                      <Ionicons name="alert-circle" size={18} color="#DC2626" />
+                      <Text style={[styles.statusBannerText, { color: '#B91C1C' }]}>{exportError}</Text>
+                    </View>
+                  )}
 
-                  {/* Nút hành động cuối */}
-                  <View style={[styles.exportActionRow, { marginTop: 14 }]}>
+                  {/* Nút Tạo file */}
+                  <View style={styles.exportActionRow}>
                     <TouchableOpacity
                       style={styles.cancelExportBtn}
-                      onPress={() => {
-                        if (preparedFile) ExcelExportService.revokePreparedFile(preparedFile);
-                        setPreparedFile(null);
-                        setExportStatus('idle');
-                        setExportNotice(null);
-                      }}
+                      onPress={handleCloseExportModal}
                     >
-                      <Text style={styles.cancelExportBtnText}>Tạo lại với bộ lọc khác</Text>
+                      <Text style={styles.cancelExportBtnText}>Đóng</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
-                      style={[styles.cancelExportBtn, { backgroundColor: '#E2E8F0' }]}
+                      style={[styles.doExportBtn, !isCommittedToWipe && styles.doExportBtnDisabled]}
+                      onPress={handlePrepareExport}
+                      activeOpacity={isCommittedToWipe ? 0.85 : 0.6}
+                    >
+                      <Ionicons name="document-text-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.doExportBtnText}>XÁC NHẬN & TẠO FILE EXCEL (.xlsx)</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {!isCommittedToWipe && (
+                    <Text style={styles.commitmentHintText}>
+                      * Vui lòng đánh dấu vào cam kết bảo mật ở trên để tiếp tục tạo file.
+                    </Text>
+                  )}
+                </>
+              )}
+
+              {/* TRẠNG THÁI 2: GENERATING - ĐANG TẠO FILE EXCEL THẬT */}
+              {exportStatus === 'generating' && (
+                <View style={styles.generatingStateBox}>
+                  <ActivityIndicator size="large" color="#059669" style={{ marginBottom: 14 }} />
+                  <Text style={styles.generatingTitle}>Đang tạo file Excel thật (.xlsx)...</Text>
+                  <Text style={styles.generatingSubtext}>
+                    Đang xử lý dữ liệu {targetExportPatients.length} bệnh nhân và xác thực 3 Sheet (TONG_HOP, CHI_TIET, HUONG_DAN_BIEN).
+                  </Text>
+                </View>
+              )}
+
+              {/* TRẠNG THÁI 3: READY / SHARING / SHARED / CANCELLED / UNSUPPORTED - FILE ĐÃ SẴN SÀNG */}
+              {(exportStatus === 'ready' ||
+                exportStatus === 'sharing' ||
+                exportStatus === 'shared' ||
+                exportStatus === 'cancelled' ||
+                exportStatus === 'unsupported') &&
+                preparedFile && (
+                  <View style={styles.fileReadyContainer}>
+                    {/* Thẻ thông tin file đã tạo thành công */}
+                    <View style={styles.readyFileCard}>
+                      <View style={styles.readyFileHeader}>
+                        <Ionicons name="checkmark-circle" size={24} color="#059669" />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.readyFileName} numberOfLines={1}>
+                            {preparedFile.filename}
+                          </Text>
+                          <Text style={styles.readyFileMeta}>
+                            Dung lượng: {preparedFile.formattedSize} • {preparedFile.patientCount} BN • {preparedFile.assessmentCount} lượt đo
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.readySheetBadge}>
+                        <Ionicons name="shield-checkmark" size={13} color="#166534" style={{ marginRight: 4 }} />
+                        <Text style={styles.readySheetBadgeText}>
+                          Đã xác thực 3 Sheet hợp lệ (TONG_HOP, CHI_TIET, HUONG_DAN_BIEN)
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Thẻ trạng thái tiêu hủy dữ liệu */}
+                    {hasPurgedData ? (
+                      <View style={styles.purgedSuccessCard}>
+                        <View style={styles.purgedSuccessHeader}>
+                          <Ionicons name="shield-checkmark" size={22} color="#15803D" />
+                          <Text style={styles.purgedSuccessTitle}>ĐÃ TIÊU HỦY DỮ LIỆU BỆNH NHÂN TRÊN APP</Text>
+                        </View>
+                        <Text style={styles.purgedSuccessDesc}>
+                          Toàn bộ hồ sơ bệnh nhân và các lượt đánh giá đã được xóa sạch hoàn toàn khỏi bộ nhớ máy và hệ thống máy chủ. Nhà phát hành không lưu trữ bất kỳ thông tin nào của người bệnh.
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={styles.purgeNoticeCard}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                          <Ionicons name="shield-outline" size={18} color="#D97706" style={{ marginRight: 6 }} />
+                          <Text style={styles.purgeNoticeTitle}>Cam kết tiêu hủy dữ liệu khi chia sẻ/tải về</Text>
+                        </View>
+                        <Text style={styles.purgeNoticeDesc}>
+                          Khi bạn bấm [CHIA SẺ FILE] hoặc [Tải file về máy], hệ thống sẽ tự động tiêu hủy toàn bộ dữ liệu bệnh nhân trên app để bảo mật thông tin.
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.manualPurgeBtn}
+                          onPress={() => handlePurgeData(false)}
+                          disabled={isPurgingData}
+                          activeOpacity={0.8}
+                        >
+                          {isPurgingData ? (
+                            <ActivityIndicator size="small" color="#DC2626" style={{ marginRight: 6 }} />
+                          ) : (
+                            <Ionicons name="trash-outline" size={16} color="#DC2626" style={{ marginRight: 6 }} />
+                          )}
+                          <Text style={styles.manualPurgeBtnText}>
+                            {isPurgingData ? 'Đang tiêu hủy dữ liệu...' : 'Tiêu hủy toàn bộ dữ liệu bệnh nhân ngay'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {/* Thông báo trạng thái tương tác */}
+                    {exportStatus === 'shared' && (
+                      <View style={[styles.statusBanner, { backgroundColor: '#EFF6FF' }]}>
+                        <Ionicons name="information-circle" size={18} color="#0284C7" />
+                        <Text style={[styles.statusBannerText, { color: '#0369A1' }]}>
+                          Đã mở bảng chia sẻ iPhone. Bạn hãy chọn Zalo hoặc Lưu vào Tệp.
+                        </Text>
+                      </View>
+                    )}
+
+                    {exportStatus === 'cancelled' && (
+                      <View style={[styles.statusBanner, { backgroundColor: '#FFFBEB' }]}>
+                        <Ionicons name="alert-circle" size={18} color="#D97706" />
+                        <Text style={[styles.statusBannerText, { color: '#B45309' }]}>
+                          Bạn đã đóng bảng chia sẻ. File vẫn sẵn sàng nếu bạn muốn chia sẻ lại.
+                        </Text>
+                      </View>
+                    )}
+
+                    {exportNotice && exportStatus !== 'shared' && exportStatus !== 'cancelled' && (
+                      <View style={[styles.statusBanner, { backgroundColor: '#F0FDF4' }]}>
+                        <Ionicons name="checkmark-circle" size={18} color="#059669" />
+                        <Text style={[styles.statusBannerText, { color: '#15803D' }]}>{exportNotice}</Text>
+                      </View>
+                    )}
+
+                    {/* 2 NÚT THAO TÁC RÕ RÀNG: CHIA SẺ IPHONE & TẢI VỀ */}
+                    <View style={styles.actionButtonStack}>
+                      {/* NÚT CHÍNH: CHIA SẺ FILE (ZALO / LƯU VÀO TỆP) */}
+                      <TouchableOpacity
+                        style={styles.btnSharePrimary}
+                        onPress={handleShareFile}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="share-social" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+                        <Text style={styles.btnSharePrimaryText}>CHIA SẺ FILE (ZALO / TỆP)</Text>
+                      </TouchableOpacity>
+
+                      {/* NÚT PHỤ: TẢI FILE VỀ MÁY */}
+                      <TouchableOpacity
+                        style={styles.btnDownloadSecondary}
+                        onPress={handleDownloadFile}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="download-outline" size={18} color="#0284C7" style={{ marginRight: 6 }} />
+                        <Text style={styles.btnDownloadSecondaryText}>Tải file về máy (.xlsx)</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* HƯỚNG DẪN CHI TIẾT GỬI QUA ZALO TRÊN IPHONE (MỤC 3 & 4) */}
+                    <View style={styles.zaloGuideBox}>
+                      <Text style={styles.zaloGuideTitle}>📱 HƯỚNG DẪN GỬI QUA ZALO TRÊN IPHONE:</Text>
+                      <Text style={styles.zaloGuideText}>
+                        <Text style={styles.boldText}>Cách 1:</Text> Bấm nút <Text style={{ color: '#059669', fontWeight: '800' }}>[CHIA SẺ FILE]</Text> ở trên. Khi bảng chia sẻ iPhone hiện lên, chạm vào biểu tượng <Text style={styles.boldText}>Zalo</Text> → Chọn người nhận hoặc nhóm → Bấm Gửi.
+                      </Text>
+                      <Text style={styles.zaloGuideText}>
+                        <Text style={styles.boldText}>Cách 2 (Nếu không thấy Zalo):</Text> Chọn <Text style={styles.boldText}>Lưu vào Tệp</Text> (Save to Files) → Mở Zalo → Vào cuộc trò chuyện → Bấm dấu <Text style={styles.boldText}>(+)</Text> → Chọn <Text style={styles.boldText}>Tài liệu</Text> → Chọn file Excel vừa lưu.
+                      </Text>
+                      <Text style={styles.zaloGuideTip}>
+                        💡 Lưu ý: Trình duyệt Safari trên iPhone hỗ trợ đầy đủ việc gửi file đính kèm trực tiếp sang Zalo.
+                      </Text>
+                    </View>
+
+                    {/* Nút hành động cuối */}
+                    <View style={[styles.exportActionRow, { marginTop: 14 }]}>
+                      <TouchableOpacity
+                        style={styles.cancelExportBtn}
+                        onPress={() => {
+                          if (preparedFile) ExcelExportService.revokePreparedFile(preparedFile);
+                          setPreparedFile(null);
+                          setExportStatus('idle');
+                          setExportNotice(null);
+                        }}
+                      >
+                        <Text style={styles.cancelExportBtnText}>Tạo lại với bộ lọc khác</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.cancelExportBtn, { backgroundColor: '#E2E8F0' }]}
+                        onPress={handleCloseExportModal}
+                      >
+                        <Text style={[styles.cancelExportBtnText, { color: '#1E293B' }]}>Hoàn tất</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+              {/* TRẠNG THÁI 4: ERROR */}
+              {exportStatus === 'error' && (
+                <View style={styles.errorStateBox}>
+                  <Ionicons name="alert-circle" size={36} color="#DC2626" style={{ marginBottom: 10 }} />
+                  <Text style={styles.errorStateTitle}>Không thể tạo hoặc chia sẻ file</Text>
+                  <Text style={styles.errorStateMessage}>{exportError || 'Có lỗi xảy ra.'}</Text>
+
+                  <View style={[styles.exportActionRow, { marginTop: 16 }]}>
+                    <TouchableOpacity
+                      style={styles.cancelExportBtn}
                       onPress={handleCloseExportModal}
                     >
-                      <Text style={[styles.cancelExportBtnText, { color: '#1E293B' }]}>Hoàn tất</Text>
+                      <Text style={styles.cancelExportBtnText}>Đóng</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.doExportBtn}
+                      onPress={() => setExportStatus('idle')}
+                    >
+                      <Text style={styles.doExportBtnText}>Thử lại</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
               )}
-
-            {/* TRẠNG THÁI 4: ERROR */}
-            {exportStatus === 'error' && (
-              <View style={styles.errorStateBox}>
-                <Ionicons name="alert-circle" size={36} color="#DC2626" style={{ marginBottom: 10 }} />
-                <Text style={styles.errorStateTitle}>Không thể tạo hoặc chia sẻ file</Text>
-                <Text style={styles.errorStateMessage}>{exportError || 'Có lỗi xảy ra.'}</Text>
-
-                <View style={[styles.exportActionRow, { marginTop: 16 }]}>
-                  <TouchableOpacity
-                    style={styles.cancelExportBtn}
-                    onPress={handleCloseExportModal}
-                  >
-                    <Text style={styles.cancelExportBtnText}>Đóng</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.doExportBtn}
-                    onPress={() => setExportStatus('idle')}
-                  >
-                    <Text style={styles.doExportBtnText}>Thử lại</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1630,6 +1851,148 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     color: '#FFFFFF',
+  },
+  exportDialogScroll: {
+    maxHeight: 520,
+  },
+  exportDialogScrollContent: {
+    paddingBottom: 4,
+  },
+  commitmentContainer: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  commitmentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#FECACA',
+  },
+  commitmentTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    color: '#991B1B',
+    letterSpacing: 0.3,
+    flex: 1,
+  },
+  commitmentBody: {
+    gap: 6,
+    marginBottom: 10,
+  },
+  commitmentItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+  },
+  commitmentText: {
+    fontSize: 11,
+    color: '#7F1D1D',
+    lineHeight: 16,
+    flex: 1,
+  },
+  commitmentCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#F87171',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  commitmentCheckboxRowChecked: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#DC2626',
+  },
+  commitmentCheckboxLabel: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#475569',
+    flex: 1,
+    lineHeight: 16,
+  },
+  commitmentCheckboxLabelChecked: {
+    color: '#991B1B',
+  },
+  commitmentHintText: {
+    fontSize: 11,
+    color: '#DC2626',
+    marginTop: 6,
+    fontStyle: 'italic',
+    textAlign: 'right',
+  },
+  doExportBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    opacity: 0.7,
+  },
+  purgedSuccessCard: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  purgedSuccessHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  purgedSuccessTitle: {
+    fontSize: 12.5,
+    fontWeight: '900',
+    color: '#15803D',
+    flex: 1,
+  },
+  purgedSuccessDesc: {
+    fontSize: 11,
+    color: '#166534',
+    lineHeight: 16,
+  },
+  purgeNoticeCard: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  purgeNoticeTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  purgeNoticeDesc: {
+    fontSize: 11,
+    color: '#78350F',
+    lineHeight: 15,
+    marginBottom: 8,
+  },
+  manualPurgeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+  },
+  manualPurgeBtnText: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    color: '#DC2626',
   },
   generatingStateBox: {
     paddingVertical: 32,

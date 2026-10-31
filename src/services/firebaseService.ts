@@ -803,4 +803,58 @@ export const FirebaseService = {
     const found = all.find((r) => r.email.trim().toLowerCase() === trimmed && r.is_active !== false);
     return found || null;
   },
+
+  /**
+   * Tiêu hủy hoàn toàn dữ liệu bệnh nhân và đánh giá trên CSDL (Firestore + Local)
+   * Nhằm thực hiện cam kết bảo mật thông tin bệnh nhân sau khi xuất Excel
+   */
+  async clearAllPatientData(): Promise<{
+    success: boolean;
+    deletedPatients: number;
+    deletedAssessments: number;
+    error?: string;
+  }> {
+    // 1. Luôn xóa sạch bộ nhớ máy trước
+    await StorageService.clearAllPatientData();
+
+    let deletedPatients = 0;
+    let deletedAssessments = 0;
+
+    // 2. Xóa trên Firestore nếu có kết nối
+    if (db) {
+      try {
+        // Xóa collection patients
+        const pQuery = query(collection(db, PATIENTS_COLLECTION));
+        const pSnap = await getDocs(pQuery);
+        const pPromises: Promise<void>[] = [];
+        pSnap.forEach((docSnap) => {
+          pPromises.push(deleteDoc(docSnap.ref));
+          deletedPatients++;
+        });
+        await Promise.all(pPromises);
+
+        // Xóa collection assessments
+        const aQuery = query(collection(db, ASSESSMENTS_COLLECTION));
+        const aSnap = await getDocs(aQuery);
+        const aPromises: Promise<void>[] = [];
+        aSnap.forEach((docSnap) => {
+          aPromises.push(deleteDoc(docSnap.ref));
+          deletedAssessments++;
+        });
+        await Promise.all(aPromises);
+
+        return { success: true, deletedPatients, deletedAssessments };
+      } catch (err: any) {
+        console.warn('Lỗi xóa dữ liệu trên Firestore (đã xóa bộ nhớ máy):', err?.message);
+        return {
+          success: false,
+          deletedPatients,
+          deletedAssessments,
+          error: err?.message || 'Không thể xóa trên Firestore, đã xóa trong bộ nhớ máy.',
+        };
+      }
+    }
+
+    return { success: true, deletedPatients, deletedAssessments };
+  },
 };

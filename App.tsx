@@ -70,7 +70,19 @@ export default function App() {
       let t0Timestamp = selectedPatient.t0_timestamp || null;
       let elapsedMinutes: number | undefined = undefined;
 
-      if (t0Timestamp) {
+      if (selectedTimepoint === 'T0') {
+        elapsedMinutes = 0;
+        if (!t0Timestamp) {
+          t0Timestamp = actualTime;
+          const updatedPatient: Patient = {
+            ...selectedPatient,
+            t0_timestamp: actualTime,
+          };
+          await FirebaseService.savePatient(updatedPatient, currentUser);
+          setSelectedPatient(updatedPatient);
+          await StorageService.updateActiveEpisodeT0(patientCode, actualTime);
+        }
+      } else if (t0Timestamp) {
         const t0Time = new Date(t0Timestamp).getTime();
         elapsedMinutes = Math.max(0, Math.round((now.getTime() - t0Time) / 60000));
       } else {
@@ -84,6 +96,7 @@ export default function App() {
           };
           await FirebaseService.savePatient(updatedPatient, currentUser);
           setSelectedPatient(updatedPatient);
+          await StorageService.updateActiveEpisodeT0(patientCode, actualTime);
         }
       }
 
@@ -119,8 +132,7 @@ export default function App() {
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Ho_Chi_Minh',
         elapsed_minutes_from_T0: elapsedMinutes,
         timepoint_label: selectedTimepoint,
-        planned_timepoint: selectedTimepoint,
-        timepoint_status: 'ON_TIME',
+        timepoint_status: selectedTimepoint === 'T0' ? 'BASELINE' : 'ON_TIME',
         is_early: false,
         duration_seconds: 5,
         completion_status: 'completed',
@@ -130,6 +142,7 @@ export default function App() {
         device_type: deviceType,
         app_version: '2.5.0',
         save_status: 'offline_cached',
+        is_primary_assessment: true,
       };
 
       const saveResult = await FirebaseService.saveAssessment(assessmentData);

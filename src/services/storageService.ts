@@ -515,4 +515,47 @@ export const StorageService = {
       console.error('Error deactivating episode:', e);
     }
   },
+
+  async updateActiveEpisodeT0(patientCode: string, t0Timestamp: string): Promise<void> {
+    try {
+      const normalizedCode = patientCode.trim().toUpperCase();
+      const episodes = await this.getAllEpisodes();
+      let found = false;
+      const updated = episodes.map((e) => {
+        if (e.patient_code === normalizedCode && e.is_active) {
+          found = true;
+          return { ...e, t0_timestamp: t0Timestamp };
+        }
+        return e;
+      });
+      if (!found) {
+        await this.createEpisode(normalizedCode, t0Timestamp);
+      } else {
+        await AsyncStorage.setItem(STORAGE_KEYS.EPISODES, JSON.stringify(updated));
+      }
+    } catch (e) {
+      console.error('Error updating active episode T0:', e);
+    }
+  },
+
+  /**
+   * Xóa sạch toàn bộ dữ liệu bệnh nhân, đánh giá và đợt theo dõi trong bộ nhớ máy (Local Storage)
+   * Phục vụ mục đích bảo mật thông tin bệnh nhân sau khi xuất file Excel
+   */
+  async clearAllPatientData(): Promise<void> {
+    try {
+      await AsyncStorage.multiRemove([
+        STORAGE_KEYS.PATIENTS,
+        STORAGE_KEYS.ASSESSMENTS,
+        STORAGE_KEYS.EPISODES,
+        STORAGE_KEYS.CACHED_PATIENT_STUDY_ID,
+        STORAGE_KEYS.CURRENT_TIMEPOINT,
+        STORAGE_KEYS.CURRENT_ASSISTANCE,
+      ]);
+    } catch (e) {
+      console.error('Error clearing local patient data:', e);
+      throw e;
+    }
+  },
 };
+

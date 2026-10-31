@@ -44,9 +44,15 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
   const [editBirthYear, setEditBirthYear] = useState<string>('');
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
-  // Manual T0 modal
+  // Manual T0 modal & selector state
   const [isT0ModalOpen, setIsT0ModalOpen] = useState<boolean>(false);
-  const [t0InputTime, setT0InputTime] = useState<string>('');
+  const [t0Year, setT0Year] = useState<number>(new Date().getFullYear());
+  const [t0Month, setT0Month] = useState<number>(new Date().getMonth() + 1);
+  const [t0Day, setT0Day] = useState<number>(new Date().getDate());
+  const [t0Hour, setT0Hour] = useState<number>(new Date().getHours());
+  const [t0Minute, setT0Minute] = useState<number>(new Date().getMinutes());
+  const [isSavingT0, setIsSavingT0] = useState<boolean>(false);
+  const [referenceNow, setReferenceNow] = useState<number>(0);
 
   // Doctor custom timepoints state
   const [currentTimepoints, setCurrentTimepoints] = useState<TimepointConfigItem[]>(
@@ -151,18 +157,143 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
     }
   };
 
-  // Thiết lập T0 tham chiếu
-  const handleSetT0Now = async () => {
-    const nowIso = new Date().toISOString();
-    const updated: Patient = {
-      ...currentPatient,
-      t0_timestamp: nowIso,
-    };
-    await FirebaseService.savePatient(updated, currentUser);
-    setCurrentPatient(updated);
-    setIsT0ModalOpen(false);
-    if (onPatientUpdated) onPatientUpdated(updated);
-    Alert.alert('Đã thiết lập', 'Đã ghi nhận mốc tham chiếu T0 là thời điểm hiện tại.');
+  // Mở modal cấu hình mốc T0 với giá trị ngày giờ khởi tạo
+  const handleOpenT0Modal = () => {
+    setReferenceNow(Date.now());
+    let baseDate = new Date();
+    if (currentPatient.t0_timestamp) {
+      const parsed = new Date(currentPatient.t0_timestamp);
+      if (!isNaN(parsed.getTime())) {
+        baseDate = parsed;
+      }
+    }
+    setT0Year(baseDate.getFullYear());
+    setT0Month(baseDate.getMonth() + 1);
+    setT0Day(baseDate.getDate());
+    setT0Hour(baseDate.getHours());
+    setT0Minute(baseDate.getMinutes());
+    setIsT0ModalOpen(true);
+  };
+
+  // Chọn thời điểm T0 là Hiện tại
+  const handleSetT0Now = () => {
+    const now = new Date();
+    setT0Year(now.getFullYear());
+    setT0Month(now.getMonth() + 1);
+    setT0Day(now.getDate());
+    setT0Hour(now.getHours());
+    setT0Minute(now.getMinutes());
+  };
+
+  // Chọn lùi thời gian so với hiện tại (-15m, -30m, -1h, -2h)
+  const handleOffsetMinutesFromNow = (minutesBack: number) => {
+    const target = new Date(Date.now() - minutesBack * 60 * 1000);
+    setT0Year(target.getFullYear());
+    setT0Month(target.getMonth() + 1);
+    setT0Day(target.getDate());
+    setT0Hour(target.getHours());
+    setT0Minute(target.getMinutes());
+  };
+
+  // Chọn Hôm nay / Hôm qua
+  const handleSetToday = () => {
+    const now = new Date();
+    setT0Year(now.getFullYear());
+    setT0Month(now.getMonth() + 1);
+    setT0Day(now.getDate());
+  };
+
+  const handleSetYesterday = () => {
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000);
+    setT0Year(yesterday.getFullYear());
+    setT0Month(yesterday.getMonth() + 1);
+    setT0Day(yesterday.getDate());
+  };
+
+  const handleAdjustHour = (delta: number) => {
+    setT0Hour((prev) => (prev + delta + 24) % 24);
+  };
+
+  const handleAdjustMinute = (delta: number) => {
+    setT0Minute((prev) => {
+      let next = prev + delta;
+      if (next < 0) next = 59;
+      else if (next > 59) next = 0;
+      return next;
+    });
+  };
+
+  const handleAdjustDay = (delta: number) => {
+    const current = new Date(t0Year, t0Month - 1, t0Day + delta, t0Hour, t0Minute);
+    setT0Year(current.getFullYear());
+    setT0Month(current.getMonth() + 1);
+    setT0Day(current.getDate());
+  };
+
+  // Tính toán thời gian T0 đang chọn và độ lệch
+  const computedT0Date = React.useMemo(() => {
+    return new Date(t0Year, t0Month - 1, t0Day, t0Hour, t0Minute, 0);
+  }, [t0Year, t0Month, t0Day, t0Hour, t0Minute]);
+
+  const t0DiffText = React.useMemo(() => {
+    if (!referenceNow || isNaN(computedT0Date.getTime())) return '';
+    const diffMs = referenceNow - computedT0Date.getTime();
+    const diffMinutes = Math.round(diffMs / 60000);
+    if (Math.abs(diffMinutes) <= 1) return 'Thời điểm hiện tại';
+    if (diffMinutes > 0) {
+      const hrs = Math.floor(diffMinutes / 60);
+      const mins = diffMinutes % 60;
+      if (hrs === 0) return `Cách đây ${mins} phút`;
+      if (mins === 0) return `Cách đây ${hrs} giờ`;
+      return `Cách đây ${hrs} giờ ${mins} phút`;
+    } else {
+      const futureMins = Math.abs(diffMinutes);
+      return `Mốc tương lai (+${futureMins} phút)`;
+    }
+  }, [computedT0Date, referenceNow]);
+
+  // Phân loại mức độ đau VAS chuẩn y tế: 0-<4: Nhẹ, >=4-<7: Vừa, >=7: Nặng
+  const getPainCategory = (vasMm: number) => {
+    if (vasMm < 40) return { label: 'Đau nhẹ', color: '#16A34A', bg: '#DCFCE7' };
+    if (vasMm < 70) return { label: 'Đau vừa', color: '#D97706', bg: '#FEF3C7' };
+    return { label: 'Đau nặng', color: '#DC2626', bg: '#FEE2E2' };
+  };
+
+  // Lưu T0 và tùy chọn mở đánh giá VAS ngay
+  const handleSaveT0 = async (startVASImmediately: boolean) => {
+    const d = new Date(t0Year, t0Month - 1, t0Day, t0Hour, t0Minute, 0);
+    if (isNaN(d.getTime())) {
+      Alert.alert('Lỗi', 'Thời gian đã chọn không hợp lệ. Vui lòng kiểm tra lại ngày giờ.');
+      return;
+    }
+
+    setIsSavingT0(true);
+    try {
+      const isoString = d.toISOString();
+      const updated: Patient = {
+        ...currentPatient,
+        t0_timestamp: isoString,
+      };
+
+      await FirebaseService.savePatient(updated, currentUser);
+      const patientCode = (updated.medical_record_number || updated.study_id).trim().toUpperCase();
+      await StorageService.updateActiveEpisodeT0(patientCode, isoString);
+
+      setCurrentPatient(updated);
+      if (onPatientUpdated) onPatientUpdated(updated);
+      setIsT0ModalOpen(false);
+
+      if (startVASImmediately) {
+        onStartAssessmentForTimepoint('T0');
+      } else {
+        Alert.alert('Đã lưu mốc T0', `Mốc tham chiếu T0: ${formatDateTime(isoString)}`);
+      }
+    } catch (err: any) {
+      console.error('Lỗi lưu T0:', err);
+      Alert.alert('Lỗi', 'Không thể lưu mốc tham chiếu T0: ' + (err?.message || 'Vui lòng thử lại.'));
+    } finally {
+      setIsSavingT0(false);
+    }
   };
 
   // Lưu cấu hình mốc T cho bệnh nhân
@@ -264,42 +395,150 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
           </View>
         </View>
 
-        {/* 5.3. MỤC THỜI ĐIỂM THAM CHIẾU T0 */}
-        <View style={styles.t0Card}>
-          <View style={styles.t0HeaderRow}>
-            <View style={styles.t0TitleRow}>
-              <Ionicons name="time" size={18} color="#0369A1" />
-              <Text style={styles.t0SectionTitle}>Thời điểm tham chiếu T0</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.t0ActionBtn}
-              onPress={() => setIsT0ModalOpen(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.t0ActionBtnText}>
-                {currentPatient.t0_timestamp ? 'Đổi T0' : 'Thiết lập T0'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+        {/* 5.3. MỤC THỜI ĐIỂM THAM CHIẾU T0 & ĐÁNH GIÁ VAS MỐC T0 */}
+        {(() => {
+          const t0Assessments = assessmentsByTimepoint['T0'] || [];
+          const hasT0Assessed = t0Assessments.length > 0;
+          const latestT0 = hasT0Assessed ? t0Assessments[0] : null;
 
-          {currentPatient.t0_timestamp ? (
-            <View style={styles.t0EstablishedBox}>
-              <Text style={styles.t0EstablishedText}>
-                Mốc T0 gốc: <Text style={styles.boldDarkText}>{formatDateTime(currentPatient.t0_timestamp)}</Text>
+          return (
+            <View style={styles.t0Card}>
+              {/* Hàng 1: Badge T0 + Tên mốc & Badge Trạng thái đánh giá */}
+              <View style={styles.t0CardHeader}>
+                <View style={styles.tpPillContainer}>
+                  <View style={[styles.tpBadge, hasT0Assessed ? styles.tpBadgeDone : styles.t0BadgePending]}>
+                    <Text style={[styles.tpBadgeText, hasT0Assessed ? styles.tpBadgeTextDone : styles.t0BadgeTextPending]}>
+                      T0
+                    </Text>
+                  </View>
+                  <Text style={styles.tpDescriptionText}>Mốc tham chiếu ban đầu</Text>
+                </View>
+
+                {hasT0Assessed ? (
+                  <View style={styles.statusTagDone}>
+                    <Ionicons name="checkmark-circle" size={13} color="#059669" />
+                    <Text style={styles.statusTagDoneText}>Đã đánh giá ({t0Assessments.length})</Text>
+                  </View>
+                ) : (
+                  <View style={styles.statusTagPending}>
+                    <Ionicons name="ellipse-outline" size={12} color="#64748B" />
+                    <Text style={styles.statusTagPendingText}>Chưa đánh giá</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Hàng 2: Hộp thông tin Mốc T0 & Nút Đổi thời gian T0 */}
+              <View style={styles.t0TimeBox}>
+                <View style={styles.t0TimeTextCol}>
+                  <Text style={styles.t0TimeBoxLabel}>Mốc T0 gốc:</Text>
+                  <Text style={styles.t0TimeBoxValue}>
+                    {currentPatient.t0_timestamp ? formatDateTime(currentPatient.t0_timestamp) : 'Chưa thiết lập'}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.t0ChangeBtn}
+                  onPress={handleOpenT0Modal}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="calendar-outline" size={14} color="#0284C7" style={{ marginRight: 4 }} />
+                  <Text style={styles.t0ChangeBtnText}>
+                    {currentPatient.t0_timestamp ? 'Đổi T0' : 'Chọn T0'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.t0CardSubtext}>
+                T0 là thời điểm kết thúc phẫu thuật hoặc lần đo ban đầu, dùng làm gốc chuẩn để theo dõi các mốc T1, T6, T12, T24...
               </Text>
-              <Text style={styles.t0EstablishedSubtext}>
-                T0 được giữ cố định làm mốc tham chiếu cho toàn bộ đợt theo dõi.
-              </Text>
+
+              {/* Chi tiết đánh giá VAS mốc T0 nếu đã có */}
+              {hasT0Assessed && latestT0 && (
+                <View style={styles.t0AssessedBox}>
+                  <View style={styles.tpScoreRow}>
+                    <Text style={styles.tpScoreLabel}>Điểm VAS mốc T0 gần nhất:</Text>
+                    <Text style={styles.tpScoreValue}>
+                      {(latestT0.vas_score ?? latestT0.eVAS_score)?.toFixed(1)} mm
+                    </Text>
+                  </View>
+
+                  {/* Phân loại mức độ đau */}
+                  {(() => {
+                    const scoreVal = latestT0.vas_score ?? latestT0.eVAS_score ?? 0;
+                    const cat = getPainCategory(scoreVal);
+                    return (
+                      <View style={[styles.painCategoryMiniPill, { backgroundColor: cat.bg }]}>
+                        <Text style={[styles.painCategoryMiniText, { color: cat.color }]}>
+                          Mức độ: {cat.label}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+
+                  <View style={styles.tpTimeRow}>
+                    <Ionicons name="time-outline" size={13} color="#64748B" />
+                    <Text style={styles.tpTimeText}>
+                      Thời điểm đo thực tế: {formatDateTime(latestT0.actual_timestamp || latestT0.submit_timestamp)}
+                    </Text>
+                  </View>
+
+                  {/* Lịch sử nếu đo nhiều lần T0 */}
+                  {t0Assessments.length > 1 && (
+                    <View style={styles.multipleRecordsBox}>
+                      <Text style={styles.multipleRecordsTitle}>
+                        Lịch sử các lần đánh giá mốc T0:
+                      </Text>
+                      {t0Assessments.map((item, idx) => (
+                        <View key={item.assessment_id} style={styles.recordItemRow}>
+                          <Text style={styles.recordIndexText}>Lần {t0Assessments.length - idx}:</Text>
+                          <Text style={styles.recordScoreText}>
+                            VAS {(item.vas_score ?? item.eVAS_score)?.toFixed(1)} mm
+                          </Text>
+                          <Text style={styles.recordTimeText}>
+                            — {formatDateTime(item.actual_timestamp || item.submit_timestamp)}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Nút hành động đánh giá VAS cho mốc T0 */}
+              <View style={styles.t0MeasureActionRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.measureActionBtn,
+                    hasT0Assessed ? styles.measureActionBtnAdd : styles.measureActionBtnNew,
+                  ]}
+                  onPress={() => {
+                    if (!currentPatient.t0_timestamp) {
+                      handleOpenT0Modal();
+                    } else {
+                      onStartAssessmentForTimepoint('T0');
+                    }
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name={hasT0Assessed ? 'add-circle-outline' : 'play-circle-outline'}
+                    size={18}
+                    color={hasT0Assessed ? '#0369A1' : '#FFFFFF'}
+                    style={{ marginRight: 6 }}
+                  />
+                  <Text
+                    style={[
+                      styles.measureActionBtnText,
+                      hasT0Assessed ? styles.measureActionBtnTextAdd : styles.measureActionBtnTextNew,
+                    ]}
+                  >
+                    {hasT0Assessed ? 'Đánh giá thêm mốc T0' : 'Đánh giá VAS mốc T0 ngay'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          ) : (
-            <View style={styles.t0PendingBox}>
-              <Text style={styles.t0PendingText}>Chưa thiết lập T0</Text>
-              <Text style={styles.t0PendingSubtext}>
-                Mốc T0 sẽ tự động xác lập từ lần đánh giá VAS đầu tiên lưu thành công, hoặc bạn có thể thiết lập thủ công.
-              </Text>
-            </View>
-          )}
-        </View>
+          );
+        })()}
 
         {/* 4.2. CÁC MỐC ĐÁNH GIÁ ĐAU (DO BÁC SĨ THIẾT LẬP HOẶC MẶC ĐỊNH) */}
         <View style={styles.timepointsSection}>
@@ -330,7 +569,9 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
             </View>
           ) : (
             <View style={styles.timepointCardsList}>
-              {currentTimepoints.map((tpConfig: TimepointConfigItem) => {
+              {currentTimepoints
+                .filter((tp) => tp.key.replace('h', '').toUpperCase() !== 'T0')
+                .map((tpConfig: TimepointConfigItem) => {
                 const listForTp = assessmentsByTimepoint[tpConfig.key.toUpperCase()] || [];
                 const hasAssessed = listForTp.length > 0;
                 const latest = hasAssessed ? listForTp[0] : null;
@@ -487,32 +728,288 @@ export const PatientDetailScreen: React.FC<PatientDetailScreenProps> = ({
         </View>
       </Modal>
 
-      {/* Modal Thiết lập T0 */}
-      <Modal visible={isT0ModalOpen} transparent={true} animationType="fade" onRequestClose={() => setIsT0ModalOpen(false)}>
+      {/* Modal Chọn thời điểm tham chiếu T0 & Đánh giá VAS */}
+      <Modal
+        visible={isT0ModalOpen}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsT0ModalOpen(false)}
+      >
         <View style={styles.modalBackdrop}>
-          <View style={styles.editCard}>
+          <View style={styles.t0ModalCard}>
+            {/* Header */}
             <View style={styles.editCardHeader}>
-              <Text style={styles.editCardTitle}>Thiết lập mốc tham chiếu T0</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="time" size={22} color="#0284C7" />
+                <Text style={styles.editCardTitle}>Lựa chọn thời điểm T0</Text>
+              </View>
               <TouchableOpacity onPress={() => setIsT0ModalOpen(false)} style={{ padding: 4 }}>
-                <Ionicons name="close" size={20} color="#64748B" />
+                <Ionicons name="close" size={22} color="#64748B" />
               </TouchableOpacity>
             </View>
 
-            <View style={styles.editCardBody}>
-              <Text style={styles.t0ExplainText}>
-                Mốc T0 là thời điểm phẫu thuật xong hoặc lần đánh giá đầu tiên. Mọi mốc thời gian T1, T6, T12, T24 sẽ được tham chiếu từ T0 này.
-              </Text>
+            <ScrollView bounces={false} style={{ maxHeight: 520 }}>
+              <View style={styles.editCardBody}>
+                <Text style={styles.t0ExplainText}>
+                  Chọn thời điểm kết thúc phẫu thuật hoặc lần đo ban đầu. Các mốc T1, T6, T12, T24 sẽ được tham chiếu từ mốc T0 này.
+                </Text>
 
-              <TouchableOpacity style={styles.setNowBtn} onPress={handleSetT0Now} activeOpacity={0.85}>
-                <Ionicons name="time" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                <Text style={styles.setNowBtnText}>Lấy thời điểm hiện tại làm T0</Text>
-              </TouchableOpacity>
-            </View>
+                {/* Chọn nhanh mốc thời gian (Quick presets) */}
+                <Text style={styles.pickerSectionLabel}>Chọn nhanh mốc thời gian:</Text>
+                <View style={styles.quickPresetRow}>
+                  <TouchableOpacity
+                    style={styles.quickPresetChip}
+                    onPress={handleSetT0Now}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="flash-outline" size={13} color="#0284C7" style={{ marginRight: 3 }} />
+                    <Text style={styles.quickPresetChipText}>Hiện tại</Text>
+                  </TouchableOpacity>
 
-            <View style={styles.editCardActions}>
-              <TouchableOpacity style={styles.cancelActionBtn} onPress={() => setIsT0ModalOpen(false)}>
-                <Text style={styles.cancelActionBtnText}>Đóng</Text>
+                  <TouchableOpacity
+                    style={styles.quickPresetChip}
+                    onPress={() => handleOffsetMinutesFromNow(15)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.quickPresetChipText}>-15 phút</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.quickPresetChip}
+                    onPress={() => handleOffsetMinutesFromNow(30)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.quickPresetChipText}>-30 phút</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.quickPresetChip}
+                    onPress={() => handleOffsetMinutesFromNow(60)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.quickPresetChipText}>-1 giờ</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.quickPresetChip}
+                    onPress={() => handleOffsetMinutesFromNow(120)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.quickPresetChipText}>-2 giờ</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Bộ chỉnh GIỜ & PHÚT */}
+                <Text style={styles.pickerSectionLabel}>Điều chỉnh Giờ & Phút:</Text>
+                <View style={styles.timeAdjustBox}>
+                  {/* GIỜ */}
+                  <View style={styles.adjustUnitCol}>
+                    <Text style={styles.adjustUnitLabel}>GIỜ (0 - 23)</Text>
+                    <View style={styles.stepperRow}>
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => handleAdjustHour(-1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="remove" size={18} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.stepperInput}
+                        value={String(t0Hour).padStart(2, '0')}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Hour(Math.min(23, Math.max(0, n)));
+                          else if (val === '') setT0Hour(0);
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                      />
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => handleAdjustHour(1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="add" size={18} color="#0284C7" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <Text style={styles.timeColonSeparator}>:</Text>
+
+                  {/* PHÚT */}
+                  <View style={styles.adjustUnitCol}>
+                    <Text style={styles.adjustUnitLabel}>PHÚT (0 - 59)</Text>
+                    <View style={styles.stepperRow}>
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => handleAdjustMinute(-5)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="remove" size={18} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.stepperInput}
+                        value={String(t0Minute).padStart(2, '0')}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Minute(Math.min(59, Math.max(0, n)));
+                          else if (val === '') setT0Minute(0);
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                      />
+                      <TouchableOpacity
+                        style={styles.stepperBtn}
+                        onPress={() => handleAdjustMinute(5)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="add" size={18} color="#0284C7" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Bộ chỉnh NGÀY, THÁNG, NĂM */}
+                <Text style={styles.pickerSectionLabel}>Ngày / Tháng / Năm:</Text>
+                <View style={styles.dateAdjustRow}>
+                  <View style={styles.dateUnitCol}>
+                    <Text style={styles.adjustUnitLabel}>Ngày</Text>
+                    <View style={styles.stepperRowSmall}>
+                      <TouchableOpacity
+                        style={styles.stepperBtnSmall}
+                        onPress={() => handleAdjustDay(-1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="remove" size={14} color="#0284C7" />
+                      </TouchableOpacity>
+                      <TextInput
+                        style={styles.stepperInputSmall}
+                        value={String(t0Day).padStart(2, '0')}
+                        onChangeText={(val) => {
+                          const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                          if (!isNaN(n)) setT0Day(Math.min(31, Math.max(1, n)));
+                          else if (val === '') setT0Day(1);
+                        }}
+                        keyboardType="number-pad"
+                        maxLength={2}
+                      />
+                      <TouchableOpacity
+                        style={styles.stepperBtnSmall}
+                        onPress={() => handleAdjustDay(1)}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="add" size={14} color="#0284C7" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={styles.dateUnitCol}>
+                    <Text style={styles.adjustUnitLabel}>Tháng</Text>
+                    <TextInput
+                      style={styles.stepperInputSmallSolo}
+                      value={String(t0Month).padStart(2, '0')}
+                      onChangeText={(val) => {
+                        const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                        if (!isNaN(n)) setT0Month(Math.min(12, Math.max(1, n)));
+                        else if (val === '') setT0Month(1);
+                      }}
+                      keyboardType="number-pad"
+                      maxLength={2}
+                    />
+                  </View>
+
+                  <View style={styles.dateUnitColWide}>
+                    <Text style={styles.adjustUnitLabel}>Năm</Text>
+                    <TextInput
+                      style={styles.stepperInputSmallSolo}
+                      value={String(t0Year)}
+                      onChangeText={(val) => {
+                        const n = parseInt(val.replace(/[^0-9]/g, ''), 10);
+                        if (!isNaN(n)) setT0Year(n);
+                        else if (val === '') setT0Year(new Date().getFullYear());
+                      }}
+                      keyboardType="number-pad"
+                      maxLength={4}
+                    />
+                  </View>
+                </View>
+
+                {/* Nút chọn nhanh Hôm nay / Hôm qua */}
+                <View style={styles.dateQuickRow}>
+                  <TouchableOpacity
+                    style={styles.dateQuickBtn}
+                    onPress={handleSetToday}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.dateQuickBtnText}>Hôm nay</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.dateQuickBtn}
+                    onPress={handleSetYesterday}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.dateQuickBtnText}>Hôm qua</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Hộp xem trước thời gian đã chọn */}
+                <View style={styles.previewBox}>
+                  <View style={styles.previewTopRow}>
+                    <Ionicons name="calendar" size={18} color="#0284C7" />
+                    <Text style={styles.previewTitle}>Thời điểm T0 đã chọn:</Text>
+                  </View>
+                  <Text style={styles.previewDateTimeText}>
+                    {String(t0Hour).padStart(2, '0')}:{String(t0Minute).padStart(2, '0')}{'  '}
+                    {String(t0Day).padStart(2, '0')}/{String(t0Month).padStart(2, '0')}/{t0Year}
+                  </Text>
+                  {t0DiffText ? (
+                    <Text style={styles.previewDiffText}>({t0DiffText})</Text>
+                  ) : null}
+                </View>
+              </View>
+            </ScrollView>
+
+            {/* Các nút hành động */}
+            <View style={styles.t0ModalActions}>
+              {/* Nút chính: XÁC NHẬN T0 & ĐÁNH GIÁ VAS NGAY */}
+              <TouchableOpacity
+                style={[styles.t0ConfirmAndMeasureBtn, isSavingT0 && { opacity: 0.6 }]}
+                onPress={() => handleSaveT0(true)}
+                disabled={isSavingT0}
+                activeOpacity={0.85}
+              >
+                {isSavingT0 ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="play-circle" size={19} color="#FFFFFF" style={{ marginRight: 6 }} />
+                    <Text style={styles.t0ConfirmAndMeasureBtnText}>
+                      XÁC NHẬN T0 & ĐÁNH GIÁ VAS NGAY
+                    </Text>
+                  </>
+                )}
               </TouchableOpacity>
+
+              <View style={styles.t0SecondaryActionRow}>
+                <TouchableOpacity
+                  style={styles.t0SaveOnlyBtn}
+                  onPress={() => handleSaveT0(false)}
+                  disabled={isSavingT0}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="save-outline" size={16} color="#0369A1" style={{ marginRight: 4 }} />
+                  <Text style={styles.t0SaveOnlyBtnText}>Chỉ lưu mốc T0</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.cancelActionBtn}
+                  onPress={() => setIsT0ModalOpen(false)}
+                  disabled={isSavingT0}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.cancelActionBtnText}>Đóng</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         </View>
@@ -564,6 +1061,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#0F172A',
+    flex: 1,
+    textAlign: 'center',
+    marginHorizontal: 4,
   },
   headerRightRow: {
     flexDirection: 'row',
@@ -701,62 +1201,90 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#BAE6FD',
   },
-  t0HeaderRow: {
+  t0BadgePending: {
+    backgroundColor: '#E0F2FE',
+  },
+  t0BadgeTextPending: {
+    color: '#0369A1',
+  },
+  t0CardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
   },
-  t0TitleRow: {
+  t0TimeBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    marginTop: 4,
+    marginBottom: 4,
   },
-  t0SectionTitle: {
-    fontSize: 13,
+  t0TimeTextCol: {
+    flex: 1,
+    marginRight: 8,
+  },
+  t0TimeBoxLabel: {
+    fontSize: 11,
+    color: '#64748B',
+    marginBottom: 2,
+  },
+  t0TimeBoxValue: {
+    fontSize: 14,
     fontWeight: '800',
     color: '#0369A1',
   },
-  t0ActionBtn: {
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
+  t0ChangeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: '#7DD3FC',
   },
-  t0ActionBtnText: {
-    fontSize: 11,
+  t0ChangeBtnText: {
+    fontSize: 12,
     fontWeight: '700',
-    color: '#0369A1',
+    color: '#0284C7',
   },
-  t0EstablishedBox: {
-    gap: 3,
-  },
-  t0EstablishedText: {
-    fontSize: 13,
-    color: '#0F172A',
-  },
-  boldDarkText: {
-    fontWeight: '800',
-    color: '#0369A1',
-  },
-  t0EstablishedSubtext: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  t0PendingBox: {
-    gap: 3,
-  },
-  t0PendingText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#D97706',
-  },
-  t0PendingSubtext: {
+  t0CardSubtext: {
     fontSize: 11,
     color: '#64748B',
     lineHeight: 16,
+    marginTop: 2,
+    marginBottom: 4,
+  },
+  t0AssessedBox: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 8,
+    marginBottom: 4,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    gap: 4,
+  },
+  painCategoryMiniPill: {
+    alignSelf: 'flex-start',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    marginVertical: 2,
+  },
+  painCategoryMiniText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  t0MeasureActionRow: {
+    marginTop: 8,
   },
   timepointsSection: {
     marginTop: 4,
@@ -1054,19 +1582,247 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#475569',
     lineHeight: 19,
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  setNowBtn: {
+  t0ModalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    width: '100%',
+    maxWidth: 440,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+  },
+  pickerSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  quickPresetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+  },
+  quickPresetChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  quickPresetChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  timeAdjustBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 12,
+    marginBottom: 10,
+  },
+  adjustUnitCol: {
+    alignItems: 'center',
+  },
+  adjustUnitLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 4,
+  },
+  stepperRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  stepperBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperInput: {
+    width: 48,
+    height: 38,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  timeColonSeparator: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#0284C7',
+    marginTop: 12,
+  },
+  dateAdjustRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  dateUnitCol: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  dateUnitColWide: {
+    width: 80,
+    alignItems: 'center',
+  },
+  stepperRowSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  stepperBtnSmall: {
+    width: 26,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperInputSmall: {
+    width: 36,
+    height: 32,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 6,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  stepperInputSmallSolo: {
+    width: '100%',
+    height: 32,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+    borderRadius: 6,
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  dateQuickRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  dateQuickBtn: {
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 6,
+  },
+  dateQuickBtnText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  previewBox: {
+    backgroundColor: '#F0F9FF',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    alignItems: 'center',
+    gap: 3,
+    marginBottom: 4,
+  },
+  previewTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  previewTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0369A1',
+  },
+  previewDateTimeText: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#0C4A6E',
+    letterSpacing: 0.5,
+  },
+  previewDiffText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#0284C7',
+  },
+  t0ModalActions: {
+    marginTop: 12,
+    gap: 8,
+  },
+  t0ConfirmAndMeasureBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#0284C7',
-    paddingVertical: 12,
-    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    elevation: 2,
+    shadowColor: '#0284C7',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
-  setNowBtnText: {
+  t0ConfirmAndMeasureBtnText: {
+    fontSize: 13,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 0.3,
+  },
+  t0SecondaryActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  t0SaveOnlyBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  t0SaveOnlyBtnText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: '#0369A1',
   },
 });

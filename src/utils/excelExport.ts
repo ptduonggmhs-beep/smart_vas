@@ -122,6 +122,21 @@ export class ExcelExportService {
       row['episode_id'] = patient.study_id + '_EP1';
       row['T0_thuc_te'] = patient.t0_timestamp ? patient.t0_timestamp : '';
 
+      // Xuất điểm VAS tại mốc tham chiếu T0 (nếu mốc T0 chưa nằm trong danh sách timepoints)
+      const hasT0InConfig = timepoints.some((tp) => tp.key.replace('h', '').toUpperCase() === 'T0');
+      if (!hasT0InConfig) {
+        const t0List = patientAssessments['T0'] || [];
+        if (t0List.length > 0) {
+          const primaryT0 = t0List.find((item) => item.is_primary_assessment) || t0List[0];
+          const rawT0Score = primaryT0.vas_score ?? primaryT0.eVAS_score;
+          row['VAS_T0'] = rawT0Score !== null && rawT0Score !== undefined ? Number(rawT0Score.toFixed(1)) : '';
+          row['TIME_T0'] = primaryT0.actual_timestamp || primaryT0.submit_timestamp || '';
+        } else {
+          row['VAS_T0'] = '';
+          row['TIME_T0'] = '';
+        }
+      }
+
       // Duyệt qua tất cả các mốc (mặc định T1, T6, T12, T24 và các mốc tùy chỉnh)
       timepoints.forEach((tp) => {
         const normKey = tp.key.replace('h', '').toUpperCase();
@@ -213,6 +228,18 @@ export class ExcelExportService {
         Y_nghia: 'Thời điểm tham chiếu T0 thực tế (khi kết thúc mổ hoặc đo đầu tiên)',
         Kieu_du_lieu: 'Ngày giờ (ISO DateTime)',
         Ghi_chu: 'Mốc 0 giờ tham chiếu để tính thời gian trôi qua',
+      },
+      {
+        Ten_bien: 'VAS_T0',
+        Y_nghia: 'Điểm đau trên thang VAS 10 cm tại mốc tham chiếu T0 (đơn vị: mm)',
+        Kieu_du_lieu: 'Số thực (Numeric, 0.0 - 100.0)',
+        Ghi_chu: 'Ô trống biểu thị mốc T0 chưa đánh giá; TUYỆT ĐỐI không phải 0 mm',
+      },
+      {
+        Ten_bien: 'TIME_T0',
+        Y_nghia: 'Thời điểm đo thực tế của mốc tham chiếu T0',
+        Kieu_du_lieu: 'Ngày giờ (ISO DateTime)',
+        Ghi_chu: 'Giữ nguyên thời gian đo thực tế, không tự làm tròn',
       },
       {
         Ten_bien: 'VAS_T1, VAS_T6, VAS_T12, VAS_T24...',
