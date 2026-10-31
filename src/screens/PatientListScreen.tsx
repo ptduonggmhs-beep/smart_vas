@@ -37,6 +37,8 @@ export const PatientListScreen: React.FC<PatientListScreenProps> = ({
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [addModalInitialMsba, setAddModalInitialMsba] = useState<string>('');
   const [isTimepointConfigModalOpen, setIsTimepointConfigModalOpen] = useState<boolean>(false);
+  const [isSelectMode, setIsSelectMode] = useState<boolean>(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const loadPatients = async () => {
     setLoading(true);
@@ -53,6 +55,88 @@ export const PatientListScreen: React.FC<PatientListScreenProps> = ({
   useEffect(() => {
     loadPatients();
   }, []);
+
+  // Xóa 1 bệnh nhân cụ thể
+  const handleDeleteSinglePatient = (patient: Patient) => {
+    const displayMsba = patient.medical_record_number || patient.study_id;
+    const displayName = patient.patient_name || 'Bệnh nhân ' + displayMsba;
+
+    Alert.alert(
+      'Xác nhận xóa bệnh nhân',
+      `Bạn có chắc chắn muốn xóa bệnh nhân "${displayMsba} - ${displayName}" khỏi danh sách theo dõi không?\n\n• Toàn bộ hồ sơ bệnh án và lịch sử đo VAS của bệnh nhân này sẽ bị xóa khỏi ứng dụng.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa bệnh nhân',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              await FirebaseService.deletePatient(patient.study_id, currentUser, true);
+              await loadPatients();
+              Alert.alert('Thành công', `Đã xóa bệnh nhân "${displayMsba}" khỏi danh sách theo dõi.`);
+            } catch (err: any) {
+              console.error('Error deleting patient:', err);
+              Alert.alert('Lỗi', 'Không thể xóa bệnh nhân. Vui lòng thử lại.');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Chọn hoặc bỏ chọn một bệnh nhân
+  const handleToggleSelectPatient = (studyId: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(studyId) ? prev.filter((id) => id !== studyId) : [...prev, studyId]
+    );
+  };
+
+  // Chọn tất cả hoặc bỏ chọn tất cả
+  const handleToggleSelectAll = () => {
+    if (selectedIds.length === filteredPatients.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredPatients.map((p) => p.study_id));
+    }
+  };
+
+  // Xóa các bệnh nhân đã chọn
+  const handleDeleteSelectedPatients = () => {
+    if (selectedIds.length === 0) return;
+
+    Alert.alert(
+      `Xác nhận xóa ${selectedIds.length} bệnh nhân`,
+      `Bạn có chắc chắn muốn xóa ${selectedIds.length} bệnh nhân đã chọn không?\n\n• Toàn bộ hồ sơ và dữ liệu đo VAS liên quan sẽ bị xóa vĩnh viễn khỏi thiết bị.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: `Xóa ${selectedIds.length} bệnh nhân`,
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              for (const id of selectedIds) {
+                await FirebaseService.deletePatient(id, currentUser, true);
+              }
+              const count = selectedIds.length;
+              setSelectedIds([]);
+              setIsSelectMode(false);
+              await loadPatients();
+              Alert.alert('Thành công', `Đã xóa thành công ${count} bệnh nhân khỏi danh sách theo dõi.`);
+            } catch (err: any) {
+              console.error('Error deleting selected patients:', err);
+              Alert.alert('Lỗi', 'Có lỗi khi xóa bệnh nhân. Vui lòng thử lại.');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   // Xử lý khi nhấn nút dấu cộng [+] để thêm MSBA
   const handleAddMsbaPress = () => {
@@ -228,10 +312,57 @@ export const PatientListScreen: React.FC<PatientListScreenProps> = ({
       {/* 3.3. DANH SÁCH BỆNH NHÂN TỐI GIẢN (CHỈ HIỂN THỊ MSBA VÀ HỌ TÊN) */}
       <View style={styles.listSection}>
         <View style={styles.listSectionHeader}>
-          <Text style={styles.listSectionTitle}>
-            Danh sách bệnh nhân ({filteredPatients.length})
-          </Text>
-          <Text style={styles.listSectionSubtitle}>Chạm để mở hồ sơ</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.listSectionTitle}>
+              Danh sách bệnh nhân ({filteredPatients.length})
+            </Text>
+            <Text style={styles.listSectionSubtitle}>
+              {isSelectMode
+                ? `Đã chọn ${selectedIds.length} bệnh nhân để xóa`
+                : 'Chạm để mở hồ sơ hoặc xóa bệnh nhân'}
+            </Text>
+          </View>
+
+          {filteredPatients.length > 0 && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {isSelectMode ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.selectHeaderBtn}
+                    onPress={handleToggleSelectAll}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.selectHeaderBtnText}>
+                      {selectedIds.length === filteredPatients.length ? 'Bỏ chọn' : 'Chọn tất cả'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.selectHeaderBtn, styles.selectDoneBtn]}
+                    onPress={() => {
+                      setIsSelectMode(false);
+                      setSelectedIds([]);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.selectDoneBtnText}>Xong</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity
+                  style={styles.selectHeaderBtn}
+                  onPress={() => {
+                    setIsSelectMode(true);
+                    setSelectedIds([]);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="checkbox-outline" size={14} color="#0284C7" style={{ marginRight: 3 }} />
+                  <Text style={styles.selectHeaderBtnText}>Chọn xóa</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </View>
 
         {loading ? (
@@ -255,18 +386,46 @@ export const PatientListScreen: React.FC<PatientListScreenProps> = ({
           <FlatList
             data={filteredPatients}
             keyExtractor={(item) => item.study_id}
-            contentContainerStyle={styles.flatListContent}
+            contentContainerStyle={[
+              styles.flatListContent,
+              isSelectMode && selectedIds.length > 0 && { paddingBottom: 80 },
+            ]}
             showsVerticalScrollIndicator={false}
             renderItem={({ item }) => {
               const displayMsba = item.medical_record_number || item.study_id;
               const displayName = item.patient_name || 'Bệnh nhân ' + displayMsba;
+              const isSelected = selectedIds.includes(item.study_id);
 
               return (
                 <TouchableOpacity
-                  style={styles.patientRowCard}
-                  onPress={() => onSelectPatient(item)}
+                  style={[
+                    styles.patientRowCard,
+                    isSelectMode && isSelected && styles.patientRowCardSelected,
+                  ]}
+                  onPress={() => {
+                    if (isSelectMode) {
+                      handleToggleSelectPatient(item.study_id);
+                    } else {
+                      onSelectPatient(item);
+                    }
+                  }}
                   activeOpacity={0.7}
                 >
+                  {/* Icon Checkbox trong chế độ chọn nhiều */}
+                  {isSelectMode && (
+                    <TouchableOpacity
+                      onPress={() => handleToggleSelectPatient(item.study_id)}
+                      style={styles.checkboxTouch}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons
+                        name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={22}
+                        color={isSelected ? '#EF4444' : '#94A3B8'}
+                      />
+                    </TouchableOpacity>
+                  )}
+
                   <View style={styles.patientRowContent}>
                     {/* YÊU CẦU CỰC KỲ QUAN TRỌNG: MỖI HÀNG CHỈ HIỂN THỊ ĐÚNG HAI THÔNG TIN: MSBA - HỌ VÀ TÊN */}
                     <Text style={styles.patientRowText} numberOfLines={1}>
@@ -276,13 +435,46 @@ export const PatientListScreen: React.FC<PatientListScreenProps> = ({
                     </Text>
                   </View>
 
-                  <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+                  {/* Ở chế độ bình thường: Nút thùng rác xóa từng bệnh nhân + Mũi tên */}
+                  {!isSelectMode ? (
+                    <View style={styles.rowRightActions}>
+                      <TouchableOpacity
+                        style={styles.singleDeleteBtn}
+                        onPress={() => handleDeleteSinglePatient(item)}
+                        activeOpacity={0.7}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="trash-outline" size={17} color="#EF4444" />
+                      </TouchableOpacity>
+                      <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+                    </View>
+                  ) : null}
                 </TouchableOpacity>
               );
             }}
           />
         )}
       </View>
+
+      {/* Thanh tác vụ nổi khi có bệnh nhân được chọn để xóa */}
+      {isSelectMode && selectedIds.length > 0 && (
+        <View style={styles.bottomActionBar}>
+          <View style={styles.bottomActionInfo}>
+            <Text style={styles.bottomActionCountText}>
+              Đã chọn <Text style={{ fontWeight: '900', color: '#EF4444' }}>{selectedIds.length}</Text> bệnh nhân
+            </Text>
+            <Text style={styles.bottomActionHint}>Bấm nút để xóa các bệnh nhân đã chọn</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.bottomDeleteBtn}
+            onPress={handleDeleteSelectedPatients}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="trash" size={17} color="#FFFFFF" style={{ marginRight: 6 }} />
+            <Text style={styles.bottomDeleteBtnText}>Xóa ({selectedIds.length})</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Modal Thêm bệnh nhân mới */}
       <AddPatientModal
@@ -557,5 +749,100 @@ const styles = StyleSheet.create({
     color: '#64748B',
     textAlign: 'center',
     lineHeight: 18,
+  },
+  selectHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    backgroundColor: '#EFF6FF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  selectHeaderBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  selectDoneBtn: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5E1',
+  },
+  selectDoneBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  patientRowCardSelected: {
+    borderColor: '#FCA5A5',
+    backgroundColor: '#FEF2F2',
+  },
+  checkboxTouch: {
+    marginRight: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rowRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  singleDeleteBtn: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bottomActionBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+  },
+  bottomActionInfo: {
+    flex: 1,
+    marginRight: 12,
+  },
+  bottomActionCountText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  bottomActionHint: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  bottomDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EF4444',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    elevation: 2,
+  },
+  bottomDeleteBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
 });

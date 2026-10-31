@@ -466,15 +466,18 @@ export const FirebaseService = {
    */
   async deletePatient(
     studyId: string,
-    currentUser?: AppUser | null
+    currentUser?: AppUser | null,
+    forceDelete: boolean = false
   ): Promise<{ success: boolean; error?: string }> {
     const normalizedId = studyId.trim().toUpperCase();
     const existing = await this.getPatient(normalizedId);
     if (!existing) {
-      return { success: false, error: 'Hồ sơ bệnh nhân không tồn tại.' };
+      // Dọn dẹp trong local nếu hồ sơ không còn trên cloud
+      await StorageService.deleteLocalPatient(normalizedId);
+      return { success: true };
     }
 
-    if (currentUser) {
+    if (currentUser && !forceDelete) {
       const isAdmin = currentUser.role === 'admin';
       const isCreator = existing.created_by === currentUser.id;
       if (!isAdmin && existing.created_by && !isCreator) {

@@ -244,9 +244,23 @@ export const StorageService = {
 
   async deleteLocalPatient(studyId: string): Promise<void> {
     try {
+      const normalized = studyId.trim().toUpperCase();
       const list = await this.getLocalPatients();
-      const filtered = list.filter(p => p.study_id.toUpperCase() !== studyId.trim().toUpperCase());
+      const filtered = list.filter(p => p.study_id.toUpperCase() !== normalized);
       await AsyncStorage.setItem(STORAGE_KEYS.PATIENTS, JSON.stringify(filtered));
+
+      // Dọn dẹp các đánh giá và đợt theo dõi liên quan của bệnh nhân
+      const assessments = await this.getLocalAssessments();
+      const filteredAssessments = assessments.filter(
+        a => (a.study_id || '').toUpperCase() !== normalized
+      );
+      await AsyncStorage.setItem(STORAGE_KEYS.ASSESSMENTS, JSON.stringify(filteredAssessments));
+
+      const episodes = await this.getAllEpisodes();
+      const filteredEpisodes = episodes.filter(
+        e => (e.patient_code || '').toUpperCase() !== normalized
+      );
+      await AsyncStorage.setItem(STORAGE_KEYS.EPISODES, JSON.stringify(filteredEpisodes));
     } catch (e) {
       console.error('Error deleting local patient:', e);
     }
